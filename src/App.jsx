@@ -22,23 +22,28 @@ import {
   Sparkles,
   KeyRound,
 } from "lucide-react";
+import Logomark from "./components/Logomark";
 
 // ---------- Brand tokens ----------
+// Palm Volley Pickle official palette, extracted from the logo SVG source files.
+// Aesthetic: "country club gone coastal hip" — navy-dominant, coral as sharp accent.
 const C = {
-  navy: "#1A4F72",
-  navyDeep: "#0F3752",
-  babyBlue: "#9DD1E8",
-  babyBlueSoft: "#D9EDF6",
-  coral: "#E8533E",
-  coralDeep: "#C13E2A",
-  cream: "#F8F5F0",
-  ink: "#0A1F2E",
-  muted: "#6C7A85",
-  line: "#E4E0D8",
+  navy: "#0a456a",        // primary dark, dominant
+  navyDeep: "#0d2f45",    // deepest navy — footer, dark surfaces, primary text
+  blue: "#1a7ab5",        // secondary blue
+  sky: "#60c0e2",         // bright accent — labels on dark, highlights
+  babyBlue: "#a8d8ea",    // pale accent
+  ice: "#e8f4f8",         // borders, light backgrounds, dividers
+  coral: "#ea4e33",       // primary action — CTAs, rank-1 emphasis, "vs"
+  coralDeep: "#c13e2a",   // coral hover/pressed state
+  cream: "#f6f9fb",       // page background (off-white)
+  ink: "#0d2f45",         // near-black text + dark UI (alias of navyDeep)
+  muted: "#7a8f9e",       // muted body text
+  line: "#e8f4f8",        // borders (alias of ice)
 };
 
-const DISPLAY = "'Bricolage Grotesque', 'Archivo Black', sans-serif";
-const BODY = "'Plus Jakarta Sans', -apple-system, sans-serif";
+const DISPLAY = "'Russo One', 'Archivo Black', sans-serif";
+const BODY = "'Lato', -apple-system, sans-serif";
 
 // ---------- Supabase config ----------
 const SB_URL = "https://lzfadeofasgihhugmwmm.supabase.co";
@@ -149,12 +154,18 @@ function computeStats(players, games) {
       byId[pid].pointsAgainst += g.score1;
     });
   });
-  return Object.values(byId).map((s) => ({
-    ...s,
-    winPct: s.games > 0 ? s.wins / s.games : 0,
-    diff: s.pointsFor - s.pointsAgainst,
-    ppg: s.games > 0 ? s.pointsFor / s.games : 0,
-  }));
+  return Object.values(byId).map((s) => {
+    const totalPts = s.pointsFor + s.pointsAgainst;
+    return {
+      ...s,
+      winPct: s.games > 0 ? s.wins / s.games : 0,
+      diff: s.pointsFor - s.pointsAgainst,
+      ppg: s.games > 0 ? s.pointsFor / s.games : 0,
+      // Share of total points scored: pointsFor / (pointsFor + pointsAgainst).
+      // 50% = tied in points, >50% = net positive, <50% = net negative.
+      pointsPct: totalPts > 0 ? s.pointsFor / totalPts : 0,
+    };
+  });
 }
 
 function computePartnerships(players, games) {
@@ -235,10 +246,11 @@ function Splash({ message }) {
       style={{ background: C.cream, fontFamily: BODY, color: C.muted }}
     >
       <div className="text-center">
+        <Logomark className="w-14 h-14 mx-auto mb-4" />
         <div className="inline-block animate-spin mb-3">
-          <RefreshCw size={22} />
+          <RefreshCw size={18} />
         </div>
-        <div className="text-sm">{message}</div>
+        <div className="text-xs uppercase tracking-[0.22em] font-bold">{message}</div>
       </div>
     </div>
   );
@@ -294,22 +306,20 @@ function GroupGate({ onReady }) {
       }}
     >
       <div className="flex-1 flex flex-col justify-center px-6 py-12 max-w-md w-full mx-auto">
-        {/* Logo mark */}
+        {/* Logo lockup */}
         <div className="flex items-center gap-3 mb-10">
-          <div
-            className="w-12 h-12 rounded-2xl flex items-center justify-center"
-            style={{ background: C.coral, boxShadow: "0 6px 18px -4px rgba(232,83,62,0.5)" }}
-          >
-            <Trophy size={22} strokeWidth={2.4} color={C.cream} />
-          </div>
+          <Logomark variant="light" className="w-14 h-14 shrink-0" />
           <div>
             <div
-              className="text-[10px] uppercase tracking-[0.25em] font-semibold"
-              style={{ color: C.babyBlue }}
+              className="text-[10px] uppercase tracking-[0.28em] font-bold"
+              style={{ color: C.sky }}
             >
-              Palm Volley
+              Palm Volley Pickle
             </div>
-            <div className="text-xl" style={{ fontFamily: DISPLAY, fontWeight: 800 }}>
+            <div
+              className="text-2xl uppercase"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+            >
               Court Report
             </div>
           </div>
@@ -320,12 +330,12 @@ function GroupGate({ onReady }) {
         ) : mode === null ? (
           <>
             <h1
-              className="text-4xl leading-[1.05] mb-3"
-              style={{ fontFamily: DISPLAY, fontWeight: 800, letterSpacing: "-0.02em" }}
+              className="text-4xl leading-[1.05] mb-4 uppercase"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.01em" }}
             >
               Track games<br />with your crew.
             </h1>
-            <p className="text-sm mb-8" style={{ color: "rgba(248,245,240,0.75)" }}>
+            <p className="text-sm mb-8" style={{ color: "rgba(246,249,251,0.75)" }}>
               Create a group for your regulars, or join one with an invite code.
             </p>
 
@@ -375,7 +385,7 @@ function GateButton({ icon, title, subtitle, onClick, primary }) {
   return (
     <button
       onClick={onClick}
-      className="w-full text-left p-4 rounded-2xl flex items-center gap-3 transition-all active:scale-[0.99]"
+      className="w-full text-left p-4 rounded-sm flex items-center gap-3 transition-all active:scale-[0.99]"
       style={{
         background: primary ? C.coral : "rgba(255,255,255,0.06)",
         border: primary ? "none" : "1px solid rgba(255,255,255,0.12)",
@@ -383,7 +393,7 @@ function GateButton({ icon, title, subtitle, onClick, primary }) {
       }}
     >
       <div
-        className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+        className="w-10 h-10 rounded-sm flex items-center justify-center shrink-0"
         style={{ background: primary ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.1)" }}
       >
         {icon}
@@ -392,7 +402,10 @@ function GateButton({ icon, title, subtitle, onClick, primary }) {
         <div className="font-bold text-[15px]" style={{ fontFamily: BODY }}>
           {title}
         </div>
-        <div className="text-xs mt-0.5" style={{ color: primary ? "rgba(255,255,255,0.85)" : "rgba(248,245,240,0.6)" }}>
+        <div
+          className="text-xs mt-0.5"
+          style={{ color: primary ? "rgba(255,255,255,0.85)" : "rgba(246,249,251,0.6)" }}
+        >
           {subtitle}
         </div>
       </div>
@@ -410,14 +423,14 @@ function CreateGroupForm({ busy, err, onSubmit, onBack }) {
     <div>
       <button
         onClick={onBack}
-        className="text-xs uppercase tracking-wider font-bold mb-6 opacity-70"
+        className="text-[11px] uppercase tracking-[0.22em] font-bold mb-6 opacity-70"
       >
         ← Back
       </button>
-      <h2 className="text-2xl mb-2" style={{ fontFamily: DISPLAY, fontWeight: 800 }}>
+      <h2 className="text-2xl mb-2 uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
         Name your group
       </h2>
-      <p className="text-sm mb-6" style={{ color: "rgba(248,245,240,0.7)" }}>
+      <p className="text-sm mb-6" style={{ color: "rgba(246,249,251,0.7)" }}>
         This is just what shows up in the header for everyone in the group.
       </p>
       <input
@@ -428,7 +441,7 @@ function CreateGroupForm({ busy, err, onSubmit, onBack }) {
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && name.trim() && onSubmit(name.trim())}
         placeholder="e.g. Ponte Vedra Regulars"
-        className="w-full px-4 py-3.5 rounded-xl text-base font-semibold outline-none"
+        className="w-full px-4 py-3.5 rounded-sm text-base font-semibold outline-none"
         style={{
           background: "rgba(255,255,255,0.08)",
           border: "1px solid rgba(255,255,255,0.18)",
@@ -443,7 +456,7 @@ function CreateGroupForm({ busy, err, onSubmit, onBack }) {
       <button
         onClick={() => onSubmit(name.trim())}
         disabled={!name.trim() || busy}
-        className="w-full mt-6 py-3.5 rounded-xl text-base font-bold uppercase tracking-[0.12em] disabled:opacity-40"
+        className="w-full mt-6 py-3.5 rounded-sm text-base uppercase tracking-[0.18em] disabled:opacity-40"
         style={{ background: C.coral, color: C.cream, fontFamily: DISPLAY }}
       >
         {busy ? "Creating…" : "Create group"}
@@ -462,14 +475,14 @@ function JoinGroupForm({ busy, err, onSubmit, onBack }) {
     <div>
       <button
         onClick={onBack}
-        className="text-xs uppercase tracking-wider font-bold mb-6 opacity-70"
+        className="text-[11px] uppercase tracking-[0.22em] font-bold mb-6 opacity-70"
       >
         ← Back
       </button>
-      <h2 className="text-2xl mb-2" style={{ fontFamily: DISPLAY, fontWeight: 800 }}>
+      <h2 className="text-2xl mb-2 uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
         Enter your code
       </h2>
-      <p className="text-sm mb-6" style={{ color: "rgba(248,245,240,0.7)" }}>
+      <p className="text-sm mb-6" style={{ color: "rgba(246,249,251,0.7)" }}>
         Ask the person who created the group for their 6-character invite code.
       </p>
       <input
@@ -480,14 +493,13 @@ function JoinGroupForm({ busy, err, onSubmit, onBack }) {
         onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
         onKeyDown={(e) => e.key === "Enter" && code.trim() && onSubmit(code.trim())}
         placeholder="ABC123"
-        className="w-full px-4 py-4 rounded-xl text-center outline-none"
+        className="w-full px-4 py-4 rounded-sm text-center outline-none"
         style={{
           background: "rgba(255,255,255,0.08)",
           border: "1px solid rgba(255,255,255,0.18)",
           color: C.cream,
           fontFamily: DISPLAY,
           fontSize: "28px",
-          fontWeight: 800,
           letterSpacing: "0.3em",
         }}
       />
@@ -499,7 +511,7 @@ function JoinGroupForm({ busy, err, onSubmit, onBack }) {
       <button
         onClick={() => onSubmit(code.trim())}
         disabled={!code.trim() || busy}
-        className="w-full mt-6 py-3.5 rounded-xl text-base font-bold uppercase tracking-[0.12em] disabled:opacity-40"
+        className="w-full mt-6 py-3.5 rounded-sm text-base uppercase tracking-[0.18em] disabled:opacity-40"
         style={{ background: C.coral, color: C.cream, fontFamily: DISPLAY }}
       >
         {busy ? "Joining…" : "Join group"}
@@ -520,19 +532,22 @@ function CreatedGroupSuccess({ group, onContinue }) {
   return (
     <div>
       <div
-        className="w-14 h-14 rounded-2xl flex items-center justify-center mb-5"
+        className="w-14 h-14 rounded-sm flex items-center justify-center mb-5"
         style={{ background: "rgba(255,255,255,0.12)" }}
       >
-        <Sparkles size={24} color={C.babyBlue} />
+        <Sparkles size={24} color={C.sky} />
       </div>
-      <h2 className="text-3xl mb-2" style={{ fontFamily: DISPLAY, fontWeight: 800, letterSpacing: "-0.01em" }}>
+      <h2
+        className="text-3xl mb-2 uppercase"
+        style={{ fontFamily: DISPLAY, letterSpacing: "0.01em" }}
+      >
         {group.name} is live.
       </h2>
-      <p className="text-sm mb-7" style={{ color: "rgba(248,245,240,0.7)" }}>
+      <p className="text-sm mb-7" style={{ color: "rgba(246,249,251,0.7)" }}>
         Share this code with anyone you want to add. They'll need it exactly once.
       </p>
       <div
-        className="rounded-2xl p-5 mb-4"
+        className="rounded-sm p-5 mb-4"
         style={{
           background: "rgba(255,255,255,0.08)",
           border: "1px solid rgba(255,255,255,0.18)",
@@ -540,7 +555,7 @@ function CreatedGroupSuccess({ group, onContinue }) {
       >
         <div
           className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2"
-          style={{ color: C.babyBlue }}
+          style={{ color: C.sky }}
         >
           Invite Code
         </div>
@@ -549,7 +564,6 @@ function CreatedGroupSuccess({ group, onContinue }) {
           style={{
             fontFamily: DISPLAY,
             fontSize: "38px",
-            fontWeight: 800,
             letterSpacing: "0.25em",
             color: C.cream,
           }}
@@ -558,9 +572,9 @@ function CreatedGroupSuccess({ group, onContinue }) {
         </div>
         <button
           onClick={copy}
-          className="w-full mt-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold"
+          className="w-full mt-3 py-2.5 rounded-sm flex items-center justify-center gap-2 text-sm font-semibold"
           style={{
-            background: copied ? C.babyBlue : "rgba(255,255,255,0.1)",
+            background: copied ? C.sky : "rgba(255,255,255,0.1)",
             color: copied ? C.navyDeep : C.cream,
           }}
         >
@@ -570,7 +584,7 @@ function CreatedGroupSuccess({ group, onContinue }) {
       </div>
       <button
         onClick={onContinue}
-        className="w-full py-3.5 rounded-xl text-base font-bold uppercase tracking-[0.12em]"
+        className="w-full py-3.5 rounded-sm text-base uppercase tracking-[0.18em]"
         style={{ background: C.coral, color: C.cream, fontFamily: DISPLAY }}
       >
         Enter the app →
@@ -701,7 +715,7 @@ function TrackerApp({ group, onLeaveGroup }) {
         fontFamily: BODY,
         color: C.ink,
         paddingBottom: "7.5rem",
-        backgroundImage: `radial-gradient(${C.babyBlueSoft} 1px, transparent 1px)`,
+        backgroundImage: `radial-gradient(${C.babyBlue} 1px, transparent 1px)`,
         backgroundSize: "28px 28px",
       }}
     >
@@ -741,7 +755,7 @@ function TrackerApp({ group, onLeaveGroup }) {
 
       {toast && (
         <div
-          className="fixed left-1/2 bottom-28 -translate-x-1/2 px-4 py-2.5 rounded-full text-sm font-semibold shadow-lg z-50 whitespace-nowrap"
+          className="fixed left-1/2 bottom-28 -translate-x-1/2 px-4 py-2.5 rounded-sm text-sm font-semibold shadow-lg z-50 whitespace-nowrap"
           style={{ background: C.ink, color: C.cream, fontFamily: BODY }}
         >
           {toast}
@@ -766,44 +780,56 @@ function TrackerApp({ group, onLeaveGroup }) {
 function Header({ group, online, syncing, onRefresh, onOpenSettings }) {
   return (
     <header
-      className="px-5 pt-8 pb-6"
+      className="px-5 pt-8 pb-6 relative overflow-hidden"
       style={{
         background: `linear-gradient(180deg, ${C.navy} 0%, ${C.navyDeep} 100%)`,
         color: C.cream,
-        borderBottomLeftRadius: "28px",
-        borderBottomRightRadius: "28px",
-        boxShadow: "0 8px 24px -12px rgba(15,55,82,0.5)",
+        borderBottomLeftRadius: "4px",
+        borderBottomRightRadius: "4px",
+        boxShadow: "0 8px 24px -12px rgba(13,47,69,0.5)",
       }}
     >
-      <div className="max-w-xl mx-auto flex items-center justify-between">
+      {/* Grain overlay — subtle texture on the navy per PVP brand */}
+      <div
+        aria-hidden
+        className="absolute inset-0 pointer-events-none opacity-[0.04] mix-blend-overlay"
+        style={{
+          backgroundImage:
+            "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>\")",
+        }}
+      />
+      <div className="relative max-w-xl mx-auto flex items-center justify-between gap-3">
         <button
           onClick={onOpenSettings}
-          className="text-left flex-1 min-w-0 pr-3"
+          className="text-left flex items-center gap-3 min-w-0 flex-1"
           aria-label="Group info"
         >
-          <div
-            className="text-[10px] uppercase tracking-[0.22em] font-semibold flex items-center gap-1.5"
-            style={{ color: C.babyBlue, fontFamily: BODY }}
-          >
-            <span className="truncate">{group.name}</span>
-            {online ? (
-              <Cloud size={11} color={C.babyBlue} />
-            ) : (
-              <CloudOff size={11} color={C.coral} />
-            )}
+          <Logomark variant="dark" className="w-11 h-11 shrink-0" />
+          <div className="min-w-0">
+            <div
+              className="text-[10px] uppercase tracking-[0.22em] font-bold flex items-center gap-1.5"
+              style={{ color: C.sky, fontFamily: BODY }}
+            >
+              <span className="truncate">{group.name}</span>
+              {online ? (
+                <Cloud size={11} color={C.sky} />
+              ) : (
+                <CloudOff size={11} color={C.coral} />
+              )}
+            </div>
+            <h1
+              className="text-2xl leading-none mt-1 uppercase truncate"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+            >
+              Court Report
+            </h1>
           </div>
-          <h1
-            className="text-3xl leading-none mt-1.5 flex items-center gap-2"
-            style={{ fontFamily: DISPLAY, fontWeight: 800, letterSpacing: "-0.02em" }}
-          >
-            Court Report
-          </h1>
         </button>
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={onRefresh}
             disabled={syncing}
-            className="w-10 h-10 rounded-2xl flex items-center justify-center"
+            className="w-10 h-10 rounded-sm flex items-center justify-center"
             style={{ background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.15)" }}
             aria-label="Refresh"
           >
@@ -811,8 +837,8 @@ function Header({ group, online, syncing, onRefresh, onOpenSettings }) {
           </button>
           <button
             onClick={onOpenSettings}
-            className="w-11 h-11 rounded-2xl flex items-center justify-center"
-            style={{ background: C.coral, boxShadow: "0 4px 12px rgba(232,83,62,0.4)" }}
+            className="w-11 h-11 rounded-sm flex items-center justify-center"
+            style={{ background: C.coral, boxShadow: "0 4px 12px rgba(234,78,51,0.4)" }}
             aria-label="Group settings"
           >
             <Settings size={18} strokeWidth={2.4} color={C.cream} />
@@ -853,18 +879,24 @@ function GroupModal({ group, onClose, onLeave }) {
     }
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ background: "rgba(10,31,46,0.6)" }}>
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center"
+      style={{ background: "rgba(13,47,69,0.6)" }}
+    >
       <div
-        className="w-full max-w-xl rounded-t-3xl p-5 pb-8"
+        className="w-full max-w-xl rounded-t-md p-5 pb-8"
         style={{ background: C.cream, boxShadow: "0 -12px 40px rgba(0,0,0,0.2)" }}
       >
         <div className="flex items-center justify-between mb-5">
-          <h3 className="text-xl" style={{ fontFamily: DISPLAY, fontWeight: 800 }}>
-            Group
-          </h3>
+          <div className="flex items-center gap-2.5">
+            <Logomark className="w-8 h-8" />
+            <h3 className="text-xl uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
+              Group
+            </h3>
+          </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-full flex items-center justify-center"
+            className="w-8 h-8 rounded-sm flex items-center justify-center"
             style={{ background: "white", border: `1px solid ${C.line}` }}
           >
             <X size={16} />
@@ -874,14 +906,17 @@ function GroupModal({ group, onClose, onLeave }) {
         <div className="text-[10px] uppercase tracking-[0.22em] font-bold" style={{ color: C.muted }}>
           Name
         </div>
-        <div className="text-lg font-bold mb-4" style={{ fontFamily: DISPLAY }}>
+        <div
+          className="text-lg mb-4 uppercase"
+          style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+        >
           {group.name}
         </div>
 
         <div
-          className="rounded-2xl p-4 mb-4"
+          className="rounded-sm p-4 mb-4"
           style={{
-            background: `linear-gradient(135deg, ${C.babyBlueSoft} 0%, ${C.cream} 100%)`,
+            background: `linear-gradient(135deg, ${C.ice} 0%, ${C.cream} 100%)`,
             border: `1px solid ${C.line}`,
           }}
         >
@@ -896,7 +931,6 @@ function GroupModal({ group, onClose, onLeave }) {
             style={{
               fontFamily: DISPLAY,
               fontSize: "34px",
-              fontWeight: 800,
               letterSpacing: "0.25em",
               color: C.navyDeep,
             }}
@@ -906,7 +940,7 @@ function GroupModal({ group, onClose, onLeave }) {
           <div className="grid grid-cols-2 gap-2 mt-3">
             <button
               onClick={copy}
-              className="py-2.5 rounded-xl flex items-center justify-center gap-1.5 text-sm font-bold"
+              className="py-2.5 rounded-sm flex items-center justify-center gap-1.5 text-sm font-bold"
               style={{ background: "white", color: C.ink, border: `1px solid ${C.line}` }}
             >
               {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -914,7 +948,7 @@ function GroupModal({ group, onClose, onLeave }) {
             </button>
             <button
               onClick={share}
-              className="py-2.5 rounded-xl flex items-center justify-center gap-1.5 text-sm font-bold"
+              className="py-2.5 rounded-sm flex items-center justify-center gap-1.5 text-sm font-bold"
               style={{ background: C.ink, color: C.cream }}
             >
               Share
@@ -929,7 +963,7 @@ function GroupModal({ group, onClose, onLeave }) {
 
         <button
           onClick={leave}
-          className="w-full py-3 rounded-xl flex items-center justify-center gap-2 text-sm font-bold"
+          className="w-full py-3 rounded-sm flex items-center justify-center gap-2 text-sm font-bold"
           style={{ background: "transparent", color: C.coralDeep, border: `1px solid ${C.line}` }}
         >
           <LogOut size={14} /> Leave group
@@ -953,12 +987,12 @@ function BottomNav({ view, setView }) {
       style={{ paddingBottom: "env(safe-area-inset-bottom, 0)" }}
     >
       <div
-        className="max-w-xl mx-auto mx-3 mb-3 rounded-2xl flex"
+        className="max-w-xl mx-auto mx-3 mb-3 rounded-sm flex"
         style={{
           background: C.ink,
           color: C.cream,
           padding: "6px",
-          boxShadow: "0 12px 32px -8px rgba(10,31,46,0.45)",
+          boxShadow: "0 12px 32px -8px rgba(13,47,69,0.45)",
         }}
       >
         {items.map((item) => {
@@ -968,15 +1002,15 @@ function BottomNav({ view, setView }) {
             <button
               key={item.id}
               onClick={() => setView(item.id)}
-              className="flex-1 flex flex-col items-center gap-0.5 py-2 rounded-xl transition-all"
+              className="flex-1 flex flex-col items-center gap-0.5 py-2 rounded-sm transition-all"
               style={{
                 background: active ? C.coral : "transparent",
-                color: active ? C.cream : "rgba(248,245,240,0.55)",
+                color: active ? C.cream : "rgba(246,249,251,0.55)",
               }}
             >
               <Icon size={18} strokeWidth={active ? 2.6 : 2} />
               <span
-                className="text-[10px] font-semibold uppercase tracking-wider"
+                className="text-[10px] font-bold uppercase tracking-[0.18em]"
                 style={{ fontFamily: BODY }}
               >
                 {item.label}
@@ -1059,17 +1093,17 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
 
   return (
     <div className="space-y-4">
-      <div className="p-1 rounded-2xl flex" style={{ background: "white", border: `1px solid ${C.line}` }}>
+      <div className="p-1 rounded-sm flex" style={{ background: "white", border: `1px solid ${C.line}` }}>
         {["doubles", "singles"].map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
-            className="flex-1 py-2.5 rounded-xl text-sm font-bold uppercase tracking-wider transition-all"
+            className="flex-1 py-2.5 rounded-sm text-sm uppercase tracking-[0.18em] transition-all"
             style={{
               background: mode === m ? C.navy : "transparent",
               color: mode === m ? C.cream : C.muted,
-              fontFamily: BODY,
-              letterSpacing: "0.1em",
+              fontFamily: mode === m ? DISPLAY : BODY,
+              fontWeight: mode === m ? 400 : 700,
             }}
           >
             {m}
@@ -1079,7 +1113,7 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
 
       <Card>
         <label
-          className="text-[10px] uppercase tracking-[0.18em] font-bold flex items-center gap-1.5"
+          className="text-[10px] uppercase tracking-[0.22em] font-bold flex items-center gap-1.5"
           style={{ color: C.muted }}
         >
           <Calendar size={12} /> Match Date
@@ -1107,12 +1141,12 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
 
       <div className="flex items-center justify-center -my-2">
         <div
-          className="px-5 py-1.5 rounded-full text-xs font-black uppercase tracking-[0.3em]"
+          className="px-5 py-1.5 rounded-sm text-xs uppercase tracking-[0.3em]"
           style={{
             background: C.coral,
             color: C.cream,
             fontFamily: DISPLAY,
-            boxShadow: "0 4px 12px -4px rgba(232,83,62,0.4)",
+            boxShadow: "0 4px 12px -4px rgba(234,78,51,0.4)",
           }}
         >
           vs
@@ -1133,7 +1167,7 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
 
       <Card>
         <label
-          className="text-[10px] uppercase tracking-[0.18em] font-bold"
+          className="text-[10px] uppercase tracking-[0.22em] font-bold"
           style={{ color: C.muted }}
         >
           Note (optional)
@@ -1151,13 +1185,12 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
       <button
         onClick={submit}
         disabled={!canSubmit}
-        className="w-full py-4 rounded-2xl text-base font-bold uppercase tracking-[0.15em] transition-all"
+        className="w-full py-4 rounded-sm text-base uppercase tracking-[0.2em] transition-all"
         style={{
-          background: canSubmit ? C.ink : "#C8C4BC",
+          background: canSubmit ? C.ink : "#c8d0d6",
           color: C.cream,
           fontFamily: DISPLAY,
-          letterSpacing: "0.12em",
-          boxShadow: canSubmit ? "0 8px 20px -6px rgba(10,31,46,0.4)" : "none",
+          boxShadow: canSubmit ? "0 8px 20px -6px rgba(13,47,69,0.4)" : "none",
           opacity: canSubmit ? 1 : 0.7,
         }}
       >
@@ -1184,7 +1217,7 @@ function TeamCard({ label, accent, slots, selectedIds, players, score, setScore,
   const nameOf = (id) => players.find((p) => p.id === id)?.name || "—";
   return (
     <div
-      className="rounded-2xl p-4"
+      className="rounded-sm p-4"
       style={{ background: "white", border: `1px solid ${C.line}`, boxShadow: "0 1px 0 rgba(0,0,0,0.02)" }}
     >
       <div className="flex items-center justify-between mb-3">
@@ -1206,13 +1239,13 @@ function TeamCard({ label, accent, slots, selectedIds, players, score, setScore,
               return (
                 <div
                   key={i}
-                  className="flex items-center justify-between px-3 py-2.5 rounded-xl"
+                  className="flex items-center justify-between px-3 py-2.5 rounded-sm"
                   style={{ background: C.cream, border: `1px solid ${C.line}` }}
                 >
                   <span className="text-sm font-semibold truncate">{nameOf(id)}</span>
                   <button
                     onClick={() => onRemoveAt(i)}
-                    className="w-6 h-6 rounded-full flex items-center justify-center"
+                    className="w-6 h-6 rounded-sm flex items-center justify-center"
                     style={{ background: C.line, color: C.muted }}
                   >
                     <X size={12} strokeWidth={3} />
@@ -1224,8 +1257,8 @@ function TeamCard({ label, accent, slots, selectedIds, players, score, setScore,
               <button
                 key={i}
                 onClick={onOpenPicker}
-                className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-semibold"
-                style={{ border: `1.5px dashed ${C.line}`, color: C.muted, background: "transparent" }}
+                className="w-full flex items-center gap-2 px-3 py-2.5 rounded-sm text-sm font-semibold"
+                style={{ border: `1.5px dashed ${C.babyBlue}`, color: C.muted, background: "transparent" }}
               >
                 <Plus size={14} strokeWidth={2.5} /> Add player
               </button>
@@ -1246,7 +1279,7 @@ function TeamCard({ label, accent, slots, selectedIds, players, score, setScore,
             value={score}
             onChange={(e) => setScore(e.target.value)}
             placeholder="—"
-            className="w-full text-center text-3xl font-black py-2 rounded-xl outline-none"
+            className="w-full text-center text-3xl py-2 rounded-sm outline-none"
             style={{
               background: C.cream,
               color: accent,
@@ -1262,18 +1295,21 @@ function TeamCard({ label, accent, slots, selectedIds, players, score, setScore,
 
 function PlayerPicker({ title, players, onPick, onClose }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ background: "rgba(10,31,46,0.55)" }}>
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center"
+      style={{ background: "rgba(13,47,69,0.55)" }}
+    >
       <div
-        className="w-full max-w-xl rounded-t-3xl p-5 max-h-[75vh] overflow-y-auto"
+        className="w-full max-w-xl rounded-t-md p-5 max-h-[75vh] overflow-y-auto"
         style={{ background: C.cream, boxShadow: "0 -12px 40px rgba(0,0,0,0.2)" }}
       >
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-bold" style={{ fontFamily: DISPLAY }}>
+          <h3 className="text-lg uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
             {title}
           </h3>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-full flex items-center justify-center"
+            className="w-8 h-8 rounded-sm flex items-center justify-center"
             style={{ background: "white", border: `1px solid ${C.line}` }}
           >
             <X size={16} />
@@ -1289,7 +1325,7 @@ function PlayerPicker({ title, players, onPick, onClose }) {
               <button
                 key={p.id}
                 onClick={() => onPick(p.id)}
-                className="w-full text-left px-4 py-3.5 rounded-xl flex items-center justify-between"
+                className="w-full text-left px-4 py-3.5 rounded-sm flex items-center justify-between"
                 style={{ background: "white", border: `1px solid ${C.line}` }}
               >
                 <span className="font-semibold text-[15px]">{p.name}</span>
@@ -1324,7 +1360,7 @@ function PlayersView({ players, stats, onAdd, onRemove }) {
   return (
     <div className="space-y-4">
       <Card>
-        <label className="text-[10px] uppercase tracking-[0.18em] font-bold" style={{ color: C.muted }}>
+        <label className="text-[10px] uppercase tracking-[0.22em] font-bold" style={{ color: C.muted }}>
           Add Player
         </label>
         <div className="mt-2 flex gap-2">
@@ -1335,14 +1371,19 @@ function PlayersView({ players, stats, onAdd, onRemove }) {
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submit()}
             placeholder="Player name"
-            className="flex-1 px-4 py-3 rounded-xl text-sm font-semibold outline-none"
+            className="flex-1 px-4 py-3 rounded-sm text-sm font-semibold outline-none"
             style={{ background: C.cream, border: `1px solid ${C.line}`, fontFamily: BODY }}
           />
           <button
             onClick={submit}
             disabled={adding || !name.trim()}
-            className="px-5 rounded-xl font-bold text-sm uppercase tracking-wider disabled:opacity-50"
-            style={{ background: C.coral, color: C.cream, fontFamily: BODY, letterSpacing: "0.1em" }}
+            className="px-5 rounded-sm uppercase tracking-[0.18em] disabled:opacity-50"
+            style={{
+              background: C.coral,
+              color: C.cream,
+              fontFamily: DISPLAY,
+              fontSize: "13px",
+            }}
           >
             {adding ? "…" : "Add"}
           </button>
@@ -1372,13 +1413,13 @@ function PlayersView({ players, stats, onAdd, onRemove }) {
                 return (
                   <div
                     key={p.id}
-                    className="rounded-2xl px-4 py-3 flex items-center justify-between"
+                    className="rounded-sm px-4 py-3 flex items-center justify-between"
                     style={{ background: "white", border: `1px solid ${C.line}` }}
                   >
                     <div className="flex items-center gap-3">
                       <div
-                        className="w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm"
-                        style={{ background: C.babyBlueSoft, color: C.navy, fontFamily: DISPLAY }}
+                        className="w-10 h-10 rounded-sm flex items-center justify-center text-sm"
+                        style={{ background: C.ice, color: C.navy, fontFamily: DISPLAY }}
                       >
                         {p.name.slice(0, 2).toUpperCase()}
                       </div>
@@ -1393,7 +1434,7 @@ function PlayersView({ players, stats, onAdd, onRemove }) {
                     </div>
                     <button
                       onClick={() => onRemove(p.id)}
-                      className="w-9 h-9 rounded-xl flex items-center justify-center"
+                      className="w-9 h-9 rounded-sm flex items-center justify-center"
                       style={{ background: C.cream, border: `1px solid ${C.line}`, color: C.muted }}
                       aria-label="Remove player"
                     >
@@ -1433,7 +1474,7 @@ function GamesView({ games, players, onRemove }) {
         return (
           <div
             key={g.id}
-            className="rounded-2xl overflow-hidden"
+            className="rounded-sm overflow-hidden"
             style={{ background: "white", border: `1px solid ${C.line}` }}
           >
             <div
@@ -1442,8 +1483,8 @@ function GamesView({ games, players, onRemove }) {
             >
               <div className="flex items-center gap-2">
                 <span
-                  className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full"
-                  style={{ background: C.babyBlueSoft, color: C.navy }}
+                  className="text-[10px] uppercase tracking-[0.18em] font-bold px-2 py-0.5 rounded-sm"
+                  style={{ background: C.ice, color: C.navy }}
                 >
                   {g.mode}
                 </span>
@@ -1453,7 +1494,7 @@ function GamesView({ games, players, onRemove }) {
               </div>
               <button
                 onClick={() => onRemove(g.id)}
-                className="w-7 h-7 rounded-lg flex items-center justify-center"
+                className="w-7 h-7 rounded-sm flex items-center justify-center"
                 style={{ color: C.muted }}
                 aria-label="Delete game"
               >
@@ -1463,7 +1504,7 @@ function GamesView({ games, players, onRemove }) {
             <div className="p-4 grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
               <TeamResult names={g.team1.map(nameOf)} score={g.score1} won={t1Won} side="left" />
               <div
-                className="text-[10px] font-black uppercase tracking-widest"
+                className="text-[10px] uppercase tracking-[0.25em]"
                 style={{ color: C.muted, fontFamily: DISPLAY }}
               >
                 vs
@@ -1475,7 +1516,7 @@ function GamesView({ games, players, onRemove }) {
                 className="px-4 pb-3 text-xs italic"
                 style={{ color: C.muted, borderTop: `1px dashed ${C.line}`, paddingTop: "8px" }}
               >
-                “{g.note}”
+                "{g.note}"
               </div>
             )}
           </div>
@@ -1489,7 +1530,7 @@ function TeamResult({ names, score, won, side }) {
   return (
     <div style={{ textAlign: side === "left" ? "left" : "right" }}>
       <div
-        className="text-[10px] uppercase tracking-wider font-bold mb-1"
+        className="text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
         style={{ color: won ? C.coral : C.muted }}
       >
         {won ? "Winner" : ""}
@@ -1505,9 +1546,8 @@ function TeamResult({ names, score, won, side }) {
         className="text-4xl mt-1"
         style={{
           fontFamily: DISPLAY,
-          fontWeight: 800,
           color: won ? C.navy : C.muted,
-          letterSpacing: "-0.02em",
+          letterSpacing: "0.01em",
         }}
       >
         {score}
@@ -1527,6 +1567,10 @@ function StatsView({ stats, partnerships, games, players }) {
       if (sortKey === "winPct") {
         if (b.winPct !== a.winPct) return b.winPct - a.winPct;
         return b.wins - a.wins;
+      }
+      if (sortKey === "pointsPct") {
+        if (b.pointsPct !== a.pointsPct) return b.pointsPct - a.pointsPct;
+        return b.pointsFor - a.pointsFor;
       }
       return (b[sortKey] ?? 0) - (a[sortKey] ?? 0);
     });
@@ -1593,17 +1637,17 @@ function StatsView({ stats, partnerships, games, players }) {
         <MetricCard label="Players" value={stats.filter((s) => s.games > 0).length} accent={C.navyDeep} />
       </div>
 
-      <PointDifferentialBoard stats={stats} />
+      <PointsWonBoard stats={stats} />
 
-      <div className="rounded-2xl overflow-hidden" style={{ background: "white", border: `1px solid ${C.line}` }}>
+      <div className="rounded-sm overflow-hidden" style={{ background: "white", border: `1px solid ${C.line}` }}>
         <div
           className="px-4 py-3 flex items-center justify-between"
           style={{ background: C.navy, color: C.cream }}
         >
           <div className="flex items-center gap-2">
-            <Trophy size={14} color={C.babyBlue} />
+            <Trophy size={14} color={C.sky} />
             <span
-              className="text-[11px] uppercase tracking-[0.2em] font-bold"
+              className="text-[11px] uppercase tracking-[0.22em] font-bold"
               style={{ fontFamily: BODY }}
             >
               Leaderboard
@@ -1612,10 +1656,11 @@ function StatsView({ stats, partnerships, games, players }) {
           <select
             value={sortKey}
             onChange={(e) => setSortKey(e.target.value)}
-            className="text-[11px] font-bold uppercase tracking-wider px-2 py-1 rounded-md outline-none"
+            className="text-[11px] font-bold uppercase tracking-[0.12em] px-2 py-1 rounded-sm outline-none"
             style={{ background: C.navyDeep, color: C.cream, border: `1px solid rgba(255,255,255,0.1)` }}
           >
             <option value="winPct">Win %</option>
+            <option value="pointsPct">Points %</option>
             <option value="wins">Wins</option>
             <option value="games">Games</option>
             <option value="diff">Point Diff</option>
@@ -1624,7 +1669,7 @@ function StatsView({ stats, partnerships, games, players }) {
         </div>
 
         <div className="px-4 pt-3 pb-2 flex items-center justify-between">
-          <span className="text-[10px] uppercase tracking-wider font-bold" style={{ color: C.muted }}>
+          <span className="text-[10px] uppercase tracking-[0.22em] font-bold" style={{ color: C.muted }}>
             Min games: {minGames}
           </span>
           <input
@@ -1651,11 +1696,12 @@ function StatsView({ stats, partnerships, games, players }) {
                 style={{ borderTop: idx === 0 ? "none" : `1px solid ${C.line}` }}
               >
                 <div
-                  className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-black"
+                  className="w-7 h-7 rounded-sm flex items-center justify-center text-xs"
                   style={{
                     background: idx === 0 ? C.coral : C.cream,
                     color: idx === 0 ? C.cream : C.muted,
                     fontFamily: DISPLAY,
+                    border: idx === 0 ? "none" : `1px solid ${C.line}`,
                   }}
                 >
                   {idx + 1}
@@ -1670,16 +1716,24 @@ function StatsView({ stats, partnerships, games, players }) {
                 <div className="text-right">
                   <div
                     className="text-lg leading-none"
-                    style={{ fontFamily: DISPLAY, fontWeight: 800, color: C.navy }}
+                    style={{ fontFamily: DISPLAY, color: C.navy }}
                   >
                     {sortKey === "winPct"
                       ? (s.winPct * 100).toFixed(0) + "%"
+                      : sortKey === "pointsPct"
+                      ? (s.pointsPct * 100).toFixed(1) + "%"
                       : sortKey === "ppg"
                       ? s.ppg.toFixed(1)
                       : s[sortKey]}
                   </div>
-                  <div className="text-[9px] uppercase tracking-wider font-bold" style={{ color: C.muted }}>
-                    {sortKey === "winPct" ? "win rate" : sortKey === "ppg" ? "avg PF" : sortKey}
+                  <div className="text-[9px] uppercase tracking-[0.18em] font-bold" style={{ color: C.muted }}>
+                    {sortKey === "winPct"
+                      ? "win rate"
+                      : sortKey === "pointsPct"
+                      ? "pts won"
+                      : sortKey === "ppg"
+                      ? "avg PF"
+                      : sortKey}
                   </div>
                 </div>
               </div>
@@ -1690,9 +1744,9 @@ function StatsView({ stats, partnerships, games, players }) {
 
       {topPartnership && (
         <div
-          className="rounded-2xl p-4"
+          className="rounded-sm p-4"
           style={{
-            background: `linear-gradient(135deg, ${C.babyBlueSoft} 0%, ${C.cream} 100%)`,
+            background: `linear-gradient(135deg, ${C.ice} 0%, ${C.cream} 100%)`,
             border: `1px solid ${C.line}`,
           }}
         >
@@ -1702,7 +1756,7 @@ function StatsView({ stats, partnerships, games, players }) {
               Top Duo
             </span>
           </div>
-          <div className="text-lg leading-tight" style={{ fontFamily: DISPLAY, fontWeight: 700 }}>
+          <div className="text-lg leading-tight uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
             {topPartnership.aName} & {topPartnership.bName}
           </div>
           <div className="text-xs mt-1" style={{ color: C.muted }}>
@@ -1727,7 +1781,7 @@ function StatsView({ stats, partnerships, games, players }) {
               .map((p) => (
                 <div
                   key={`${p.a}|${p.b}`}
-                  className="rounded-xl px-4 py-2.5 flex items-center justify-between"
+                  className="rounded-sm px-4 py-2.5 flex items-center justify-between"
                   style={{ background: "white", border: `1px solid ${C.line}` }}
                 >
                   <div className="min-w-0 flex-1">
@@ -1739,7 +1793,7 @@ function StatsView({ stats, partnerships, games, players }) {
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="font-black text-sm" style={{ color: C.navy, fontFamily: DISPLAY }}>
+                    <div className="text-sm" style={{ color: C.navy, fontFamily: DISPLAY }}>
                       {p.wins}-{p.games - p.wins}
                     </div>
                     <div className="text-[10px] font-semibold" style={{ color: C.muted }}>
@@ -1752,7 +1806,7 @@ function StatsView({ stats, partnerships, games, players }) {
         </div>
       )}
 
-      <div className="rounded-2xl p-4" style={{ background: "white", border: `1px solid ${C.line}` }}>
+      <div className="rounded-sm p-4" style={{ background: "white", border: `1px solid ${C.line}` }}>
         <div className="text-[10px] uppercase tracking-[0.22em] font-bold mb-3" style={{ color: C.muted }}>
           Export
         </div>
@@ -1768,19 +1822,22 @@ function StatsView({ stats, partnerships, games, players }) {
   );
 }
 
-function PointDifferentialBoard({ stats }) {
+function PointsWonBoard({ stats }) {
   const active = stats.filter((s) => s.games > 0);
   if (active.length === 0) return null;
-  const sorted = active.slice().sort((a, b) => b.diff - a.diff);
-  const maxAbs = Math.max(...active.map((s) => Math.abs(s.diff)), 1);
+  // Sort by pointsPct descending. Ties broken by raw pointsFor so players
+  // who've scored more total points edge out players with identical ratios.
+  const sorted = active
+    .slice()
+    .sort((a, b) => b.pointsPct - a.pointsPct || b.pointsFor - a.pointsFor);
 
   return (
     <div
-      className="rounded-2xl overflow-hidden"
+      className="rounded-sm overflow-hidden"
       style={{
         background: "white",
         border: `1px solid ${C.line}`,
-        boxShadow: "0 6px 20px -10px rgba(232,83,62,0.3)",
+        boxShadow: "0 6px 20px -10px rgba(234,78,51,0.3)",
       }}
     >
       <div
@@ -1796,17 +1853,19 @@ function PointDifferentialBoard({ stats }) {
             className="text-[11px] uppercase tracking-[0.22em] font-bold"
             style={{ fontFamily: BODY }}
           >
-            Point Differential
+            Points Won
           </div>
           <div className="text-[10px] opacity-85" style={{ fontFamily: BODY }}>
-            Cumulative +/− across all games
+            Share of total points across all games
           </div>
         </div>
       </div>
       <div>
         {sorted.map((s, idx) => {
-          const pct = (Math.abs(s.diff) / maxAbs) * 100;
-          const positive = s.diff >= 0;
+          // Bar fill = literal percentage. 50% = the neutral "tied" line;
+          // above = winning more points than losing, below = the opposite.
+          const pct = s.pointsPct * 100;
+          const positive = s.pointsPct >= 0.5;
           const isTop = idx === 0 && positive;
           return (
             <div
@@ -1815,7 +1874,7 @@ function PointDifferentialBoard({ stats }) {
               style={{ borderTop: idx === 0 ? "none" : `1px solid ${C.line}` }}
             >
               <div
-                className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-black shrink-0"
+                className="w-7 h-7 rounded-sm flex items-center justify-center text-xs shrink-0"
                 style={{
                   background: isTop ? C.coral : C.cream,
                   color: isTop ? C.cream : C.muted,
@@ -1829,11 +1888,12 @@ function PointDifferentialBoard({ stats }) {
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="font-bold text-[14px] leading-tight truncate">{s.name}</div>
                   <div className="text-[10px] ml-2 shrink-0" style={{ color: C.muted }}>
-                    {s.games}G · {s.wins}-{s.losses}
+                    {s.games}G · {s.pointsFor}-{s.pointsAgainst}
                   </div>
                 </div>
+                {/* Bar track with 50% tick mark to anchor the neutral line */}
                 <div
-                  className="h-2 rounded-full overflow-hidden"
+                  className="relative h-2 rounded-full overflow-hidden"
                   style={{ background: C.cream, border: `1px solid ${C.line}` }}
                 >
                   <div
@@ -1846,6 +1906,16 @@ function PointDifferentialBoard({ stats }) {
                       opacity: positive ? 1 : 0.45,
                     }}
                   />
+                  {/* 50% neutral line — subtle vertical tick */}
+                  <div
+                    className="absolute top-0 bottom-0 pointer-events-none"
+                    style={{
+                      left: "50%",
+                      width: "1px",
+                      background: C.navyDeep,
+                      opacity: 0.25,
+                    }}
+                  />
                 </div>
               </div>
               <div className="text-right shrink-0 w-[62px]">
@@ -1853,19 +1923,17 @@ function PointDifferentialBoard({ stats }) {
                   className="text-2xl leading-none"
                   style={{
                     fontFamily: DISPLAY,
-                    fontWeight: 800,
                     color: positive ? C.navy : C.muted,
-                    letterSpacing: "-0.02em",
+                    letterSpacing: "0.01em",
                   }}
                 >
-                  {positive ? "+" : ""}
-                  {s.diff}
+                  {pct.toFixed(1)}%
                 </div>
                 <div
-                  className="text-[9px] uppercase tracking-wider font-bold mt-0.5"
+                  className="text-[9px] uppercase tracking-[0.18em] font-bold mt-0.5"
                   style={{ color: C.muted }}
                 >
-                  net pts
+                  pts won
                 </div>
               </div>
             </div>
@@ -1879,17 +1947,17 @@ function PointDifferentialBoard({ stats }) {
 function MetricCard({ label, value, accent }) {
   return (
     <div
-      className="rounded-2xl p-3 text-center"
+      className="rounded-sm p-3 text-center"
       style={{ background: "white", border: `1px solid ${C.line}` }}
     >
       <div
         className="text-2xl leading-none"
-        style={{ fontFamily: DISPLAY, fontWeight: 800, color: accent }}
+        style={{ fontFamily: DISPLAY, color: accent }}
       >
         {value}
       </div>
       <div
-        className="text-[10px] uppercase tracking-wider font-bold mt-1"
+        className="text-[10px] uppercase tracking-[0.22em] font-bold mt-1"
         style={{ color: C.muted }}
       >
         {label}
@@ -1903,7 +1971,7 @@ function ExportButton({ onClick, label, variant = "solid" }) {
   return (
     <button
       onClick={onClick}
-      className="flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold"
+      className="flex items-center justify-center gap-2 py-3 rounded-sm text-sm font-bold"
       style={{
         background: solid ? C.ink : "transparent",
         color: solid ? C.cream : C.ink,
@@ -1919,7 +1987,7 @@ function ExportButton({ onClick, label, variant = "solid" }) {
 function Card({ children }) {
   return (
     <div
-      className="rounded-2xl p-4"
+      className="rounded-sm p-4"
       style={{ background: "white", border: `1px solid ${C.line}` }}
     >
       {children}
@@ -1930,16 +1998,16 @@ function Card({ children }) {
 function EmptyCard({ icon, title, body, cta, onCta }) {
   return (
     <div
-      className="rounded-2xl p-8 text-center"
-      style={{ background: "white", border: `1px dashed ${C.line}` }}
+      className="rounded-sm p-8 text-center"
+      style={{ background: "white", border: `1px dashed ${C.babyBlue}` }}
     >
       <div
-        className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4"
-        style={{ background: C.babyBlueSoft }}
+        className="w-14 h-14 rounded-sm flex items-center justify-center mx-auto mb-4"
+        style={{ background: C.ice }}
       >
         {icon}
       </div>
-      <h3 className="text-lg font-bold mb-1" style={{ fontFamily: DISPLAY }}>
+      <h3 className="text-lg mb-1 uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
         {title}
       </h3>
       <p className="text-sm leading-relaxed max-w-xs mx-auto" style={{ color: C.muted }}>
@@ -1948,8 +2016,8 @@ function EmptyCard({ icon, title, body, cta, onCta }) {
       {cta && (
         <button
           onClick={onCta}
-          className="mt-5 px-5 py-2.5 rounded-xl text-sm font-bold"
-          style={{ background: C.coral, color: C.cream, fontFamily: BODY }}
+          className="mt-5 px-5 py-2.5 rounded-sm text-sm uppercase tracking-[0.18em]"
+          style={{ background: C.coral, color: C.cream, fontFamily: DISPLAY }}
         >
           {cta}
         </button>

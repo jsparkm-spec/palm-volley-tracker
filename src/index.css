@@ -12,6 +12,8 @@ body {
   margin: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #F8F5F0;
+  font-family: "Lato", -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #f6f9fb;
+  color: #0d2f45;
   overscroll-behavior-y: none;
 }
