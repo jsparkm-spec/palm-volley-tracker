@@ -1,0 +1,17 @@
+{
+  "name": "Court Report · Palm Volley",
+  "short_name": "Court Report",
+  "description": "Track pickleball games with your crew",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F8F5F0",
+  "theme_color": "#1A4F72",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any"
+    }
+  ]
+}
