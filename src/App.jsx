@@ -135,16 +135,32 @@ async function clearGroupFromStorage() {
 function computeStats(players, games) {
   const byId = {};
   players.forEach((p) => {
-    byId[p.id] = { id: p.id, name: p.name, games: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0 };
+    byId[p.id] = {
+      id: p.id,
+      name: p.name,
+      games: 0,
+      wins: 0,
+      losses: 0,
+      pointsFor: 0,
+      pointsAgainst: 0,
+      // Total points that COULD have been scored across all games the player
+      // appeared in. Per game, this is the winning team's score (the cap) —
+      // so a game that ended 11-9 contributes 11 to both teams' pointsPossible,
+      // a game to 15 that ended 15-13 contributes 15, etc. Handles games to
+      // any target without hardcoding 11.
+      pointsPossible: 0,
+    };
   });
   games.forEach((g) => {
     const t1Won = g.score1 > g.score2;
+    const cap = Math.max(g.score1, g.score2); // winning score = total possible per player
     g.team1.forEach((pid) => {
       if (!byId[pid]) return;
       byId[pid].games += 1;
       byId[pid][t1Won ? "wins" : "losses"] += 1;
       byId[pid].pointsFor += g.score1;
       byId[pid].pointsAgainst += g.score2;
+      byId[pid].pointsPossible += cap;
     });
     g.team2.forEach((pid) => {
       if (!byId[pid]) return;
@@ -152,20 +168,21 @@ function computeStats(players, games) {
       byId[pid][!t1Won ? "wins" : "losses"] += 1;
       byId[pid].pointsFor += g.score2;
       byId[pid].pointsAgainst += g.score1;
+      byId[pid].pointsPossible += cap;
     });
   });
-  return Object.values(byId).map((s) => {
-    const totalPts = s.pointsFor + s.pointsAgainst;
-    return {
-      ...s,
-      winPct: s.games > 0 ? s.wins / s.games : 0,
-      diff: s.pointsFor - s.pointsAgainst,
-      ppg: s.games > 0 ? s.pointsFor / s.games : 0,
-      // Share of total points scored: pointsFor / (pointsFor + pointsAgainst).
-      // 50% = tied in points, >50% = net positive, <50% = net negative.
-      pointsPct: totalPts > 0 ? s.pointsFor / totalPts : 0,
-    };
-  });
+  return Object.values(byId).map((s) => ({
+    ...s,
+    winPct: s.games > 0 ? s.wins / s.games : 0,
+    diff: s.pointsFor - s.pointsAgainst,
+    ppg: s.games > 0 ? s.pointsFor / s.games : 0,
+    // Share of available points actually captured. Formula:
+    //   pointsFor / pointsPossible
+    // where pointsPossible sums the winning score of each game the player
+    // appeared in. A player who wins every game 11-0 = 100%. A player who
+    // loses every game 0-11 = 0%. A player losing 9-11 sits at ~82%.
+    pointsPct: s.pointsPossible > 0 ? s.pointsFor / s.pointsPossible : 0,
+  }));
 }
 
 function computePartnerships(players, games) {
@@ -1042,12 +1059,10 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
     setTeam2((t) => t.slice(0, slotCount));
   }, [mode]);
 
+  // Any player already placed in either team is removed from the pool.
+  // Prevents the same player from being selected twice in one game.
   const allSelected = new Set([...team1, ...team2]);
-  const availableFor = (which) =>
-    players.filter((p) => {
-      const inMine = which === "team1" ? team1.includes(p.id) : team2.includes(p.id);
-      return !allSelected.has(p.id) || inMine;
-    });
+  const availablePlayers = players.filter((p) => !allSelected.has(p.id));
 
   const canSubmit =
     !saving &&
@@ -1200,7 +1215,7 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
       {pickerFor && (
         <PlayerPicker
           title={pickerFor === "team1" ? "Add to Team 1" : "Add to Team 2"}
-          players={availableFor(pickerFor)}
+          players={availablePlayers}
           onPick={(id) => {
             if (pickerFor === "team1") setTeam1([...team1, id]);
             else setTeam2([...team2, id]);
@@ -1830,6 +1845,10 @@ function PointsWonBoard({ stats }) {
   const sorted = active
     .slice()
     .sort((a, b) => b.pointsPct - a.pointsPct || b.pointsFor - a.pointsFor);
+  // Bar scaling: leader's pct = 100% bar width; everyone else proportional.
+  // This exaggerates the visual gap between players who are all above 50%,
+  // which is the typical range for "points actually won out of possible."
+  const topPct = sorted[0].pointsPct || 1;
 
   return (
     <div
@@ -1856,17 +1875,16 @@ function PointsWonBoard({ stats }) {
             Points Won
           </div>
           <div className="text-[10px] opacity-85" style={{ fontFamily: BODY }}>
-            Share of total points across all games
+            Points scored out of total possible
           </div>
         </div>
       </div>
       <div>
         {sorted.map((s, idx) => {
-          // Bar fill = literal percentage. 50% = the neutral "tied" line;
-          // above = winning more points than losing, below = the opposite.
           const pct = s.pointsPct * 100;
-          const positive = s.pointsPct >= 0.5;
-          const isTop = idx === 0 && positive;
+          // Bar width relative to the leader so the visual gap reads clearly
+          const barPct = (s.pointsPct / topPct) * 100;
+          const isTop = idx === 0;
           return (
             <div
               key={s.id}
@@ -1888,32 +1906,18 @@ function PointsWonBoard({ stats }) {
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="font-bold text-[14px] leading-tight truncate">{s.name}</div>
                   <div className="text-[10px] ml-2 shrink-0" style={{ color: C.muted }}>
-                    {s.games}G · {s.pointsFor}-{s.pointsAgainst}
+                    {s.pointsFor}/{s.pointsPossible} pts
                   </div>
                 </div>
-                {/* Bar track with 50% tick mark to anchor the neutral line */}
                 <div
-                  className="relative h-2 rounded-full overflow-hidden"
+                  className="h-2 rounded-full overflow-hidden"
                   style={{ background: C.cream, border: `1px solid ${C.line}` }}
                 >
                   <div
                     className="h-full rounded-full transition-all"
                     style={{
-                      width: `${pct}%`,
-                      background: positive
-                        ? `linear-gradient(90deg, ${C.coral} 0%, ${C.coralDeep} 100%)`
-                        : C.muted,
-                      opacity: positive ? 1 : 0.45,
-                    }}
-                  />
-                  {/* 50% neutral line — subtle vertical tick */}
-                  <div
-                    className="absolute top-0 bottom-0 pointer-events-none"
-                    style={{
-                      left: "50%",
-                      width: "1px",
-                      background: C.navyDeep,
-                      opacity: 0.25,
+                      width: `${barPct}%`,
+                      background: `linear-gradient(90deg, ${C.coral} 0%, ${C.coralDeep} 100%)`,
                     }}
                   />
                 </div>
@@ -1923,7 +1927,7 @@ function PointsWonBoard({ stats }) {
                   className="text-2xl leading-none"
                   style={{
                     fontFamily: DISPLAY,
-                    color: positive ? C.navy : C.muted,
+                    color: C.navy,
                     letterSpacing: "0.01em",
                   }}
                 >
