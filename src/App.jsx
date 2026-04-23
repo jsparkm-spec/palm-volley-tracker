@@ -886,13 +886,17 @@ function TrackerApp({ group, onLeaveGroup }) {
 function Header({ group, online, syncing, onRefresh, onOpenSettings }) {
   return (
     <header
-      className="px-5 pt-8 pb-6 relative overflow-hidden"
+      className="px-5 pb-6 relative overflow-hidden"
       style={{
         background: `linear-gradient(180deg, ${C.navy} 0%, ${C.navyDeep} 100%)`,
         color: C.cream,
         borderBottomLeftRadius: "4px",
         borderBottomRightRadius: "4px",
         boxShadow: "0 8px 24px -12px rgba(13,47,69,0.5)",
+        // Respect iOS/Android safe area so the status bar notch doesn't
+        // overlap the logo. Falls back to 2rem (32px) on browsers without
+        // env() support.
+        paddingTop: "max(2rem, calc(env(safe-area-inset-top) + 1rem))",
       }}
     >
       {/* Grain overlay — subtle texture on the navy per PVP brand */}
@@ -1906,64 +1910,58 @@ function PlayerProfileView({ playerId, players, games, stats, partnerships, onBa
 
   if (!player) {
     return (
-      <div className="pt-2">
-        <button
-          onClick={onBack}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-sm text-[11px] uppercase tracking-[0.22em] font-bold mb-6 transition-all active:scale-[0.98]"
+      <>
+        <div
           style={{
-            background: C.navy,
-            color: C.cream,
-            fontFamily: BODY,
-            boxShadow: "0 4px 12px -4px rgba(13,47,69,0.3)",
+            paddingTop: "max(1rem, calc(env(safe-area-inset-top) + 0.5rem))",
           }}
         >
-          <ArrowLeft size={14} strokeWidth={2.6} /> Back
-        </button>
-        <EmptyCard
-          icon={<Users size={24} color={C.coral} />}
-          title="Player not found"
-          body="This player may have been removed from the group."
-        />
-      </div>
+          <EmptyCard
+            icon={<Users size={24} color={C.coral} />}
+            title="Player not found"
+            body="This player may have been removed from the group."
+          />
+        </div>
+        <ProfileBackButton onBack={onBack} />
+      </>
     );
   }
 
   const hasGames = playerStats && playerStats.games > 0;
 
   return (
-    <div className="space-y-4">
-      {/* Back button + profile header */}
-      <div className="pt-2">
-        <button
-          onClick={onBack}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-sm text-[11px] uppercase tracking-[0.22em] font-bold mb-5 transition-all active:scale-[0.98]"
-          style={{
-            background: C.navy,
-            color: C.cream,
-            fontFamily: BODY,
-            boxShadow: "0 4px 12px -4px rgba(13,47,69,0.3)",
-          }}
-        >
-          <ArrowLeft size={14} strokeWidth={2.6} /> Back
-        </button>
-        <div className="flex items-center gap-3">
-          <div
-            className="w-14 h-14 rounded-sm flex items-center justify-center text-lg shrink-0"
-            style={{ background: C.navy, color: C.cream, fontFamily: DISPLAY }}
-          >
-            {player.name.slice(0, 2).toUpperCase()}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-[10px] uppercase tracking-[0.22em] font-bold" style={{ color: C.muted }}>
-              Profile
-            </div>
-            <h2
-              className="text-2xl leading-none uppercase truncate"
-              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em", color: C.ink }}
+    <>
+      <div
+        className="space-y-4"
+        style={{
+          // Top safe-area: profile view replaces the main Header so it's
+          // responsible for its own notch clearance.
+          paddingTop: "max(1rem, calc(env(safe-area-inset-top) + 0.5rem))",
+          // Extra bottom padding so the fixed Back button doesn't cover the
+          // tail end of the scrollable content (head-to-head list, etc).
+          paddingBottom: "5rem",
+        }}
+      >
+        {/* Profile header */}
+        <div>
+          <div className="flex items-center gap-3">
+            <div
+              className="w-14 h-14 rounded-sm flex items-center justify-center text-lg shrink-0"
+              style={{ background: C.navy, color: C.cream, fontFamily: DISPLAY }}
             >
-              {player.name}
-            </h2>
-          </div>
+              {player.name.slice(0, 2).toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] uppercase tracking-[0.22em] font-bold" style={{ color: C.muted }}>
+                Profile
+              </div>
+              <h2
+                className="text-2xl leading-none uppercase truncate"
+                style={{ fontFamily: DISPLAY, letterSpacing: "0.02em", color: C.ink }}
+              >
+                {player.name}
+              </h2>
+            </div>
           {playerStats && playerStats.currentStreak !== 0 && (
             <StreakBadge streak={playerStats.currentStreak} />
           )}
@@ -2058,16 +2056,18 @@ function PlayerProfileView({ playerId, players, games, stats, partnerships, onBa
                 style={{ background: C.cream, borderBottom: `1px solid ${C.line}` }}
               >
                 <TrendingUp size={14} color={C.coral} strokeWidth={2.4} />
-                <span
-                  className="text-[11px] uppercase tracking-[0.22em] font-bold"
-                  style={{ color: C.navy, fontFamily: BODY }}
-                >
-                  Point Trend
-                </span>
-                <span
-                  className="text-[10px] ml-auto"
-                  style={{ color: C.muted }}
-                >
+                <div className="flex-1 min-w-0">
+                  <div
+                    className="text-[11px] uppercase tracking-[0.22em] font-bold"
+                    style={{ color: C.navy, fontFamily: BODY }}
+                  >
+                    Recent Form
+                  </div>
+                  <div className="text-[10px]" style={{ color: C.muted }}>
+                    Rolling avg point differential · 5-game window
+                  </div>
+                </div>
+                <span className="text-[10px] shrink-0" style={{ color: C.muted }}>
                   {playerGames.length} games
                 </span>
               </div>
@@ -2184,6 +2184,35 @@ function PlayerProfileView({ playerId, players, games, stats, partnerships, onBa
           )}
         </>
       )}
+      </div>
+      <ProfileBackButton onBack={onBack} />
+    </>
+  );
+}
+
+// Fixed-position Back button used exclusively on the Player Profile view.
+// Sits near the bottom of the screen but not flush with the edge, centered,
+// and respects the iOS home-indicator safe area.
+function ProfileBackButton({ onBack }) {
+  return (
+    <div
+      className="fixed left-0 right-0 z-40 flex justify-center pointer-events-none"
+      style={{
+        bottom: "max(1.5rem, calc(env(safe-area-inset-bottom) + 1rem))",
+      }}
+    >
+      <button
+        onClick={onBack}
+        className="pointer-events-auto inline-flex items-center gap-2 px-6 py-3 rounded-sm text-[11px] uppercase tracking-[0.22em] font-bold transition-all active:scale-[0.98]"
+        style={{
+          background: C.navy,
+          color: C.cream,
+          fontFamily: BODY,
+          boxShadow: "0 8px 24px -6px rgba(13,47,69,0.5)",
+        }}
+      >
+        <ArrowLeft size={14} strokeWidth={2.6} /> Back
+      </button>
     </div>
   );
 }
@@ -2309,47 +2338,52 @@ function HighlightCard({ icon, iconBg, label, record, valueColor }) {
   );
 }
 
-// SVG line chart of the player's cumulative point differential over time.
-// X axis: game number (1 → total games). Y axis: running sum of (teamScore - oppScore).
+// SVG line chart of the player's "recent form" — rolling average of their
+// per-game point differential over a 5-game window. Games before index 5 use an
+// expanding window (avg of whatever's been played so far) so early players see
+// something meaningful right away.
+// X axis: game number. Y axis: avg point differential.
 // Shows y-axis gridlines + labels at "nice" round values, and x-axis endpoints.
 // Handwritten SVG to avoid any charting library — keeps bundle light.
 function PointTrendChart({ games }) {
-  // Internal coordinate system. Uses preserveAspectRatio="xMidYMid meet"
-  // by default, so labels keep their aspect ratio when the chart resizes.
   const W = 320;
   const H = 160;
-  const PAD_L = 34; // left padding (y-axis labels)
+  const PAD_L = 34;
   const PAD_R = 12;
   const PAD_T = 10;
-  const PAD_B = 22; // bottom padding (x-axis labels)
+  const PAD_B = 22;
+  const WINDOW = 5;
 
-  // Build running cumulative differential. Synthetic anchor at idx=0, cum=0 so
-  // the line starts from the origin rather than jumping in from offscreen.
-  const points = [{ idx: 0, cum: 0 }];
-  let running = 0;
-  games.forEach((g, i) => {
-    running += g.teamScore - g.oppScore;
-    points.push({ idx: i + 1, cum: running });
+  // Build per-game rolling-avg points. For game i (1-indexed in display),
+  // the avg covers games max(1, i-WINDOW+1) through i. Expanding window for
+  // early games so a fresh player sees the chart from game 1 onward.
+  const diffs = games.map((g) => g.teamScore - g.oppScore);
+  const points = diffs.map((_, i) => {
+    const start = Math.max(0, i - WINDOW + 1);
+    const slice = diffs.slice(start, i + 1);
+    const avg = slice.reduce((a, b) => a + b, 0) / slice.length;
+    return { idx: i + 1, val: avg };
   });
 
   const maxIdx = points[points.length - 1].idx;
-  const cums = points.map((p) => p.cum);
+  const vals = points.map((p) => p.val);
   // Domain always includes 0 so the zero line is visible.
-  // Add a small padding to the top/bottom of the range so the line doesn't
-  // hug the edges.
-  let minY = Math.min(0, ...cums);
-  let maxY = Math.max(0, ...cums);
-  const padY = Math.max(2, Math.round((maxY - minY) * 0.1));
+  let minY = Math.min(0, ...vals);
+  let maxY = Math.max(0, ...vals);
+  // Pad the bounds ~10% so the line doesn't hug the edges.
+  const span = maxY - minY;
+  const padY = Math.max(0.5, span * 0.1);
   if (minY < 0) minY -= padY;
   if (maxY > 0) maxY += padY;
-  // If the player is entirely positive or entirely negative, pad the opposite side too
-  // so the zero line isn't right on the edge.
-  if (minY === 0) minY = -Math.max(2, Math.round(maxY * 0.1));
-  if (maxY === 0) maxY = Math.max(2, Math.round(-minY * 0.1));
+  // If entirely positive or entirely negative, nudge the opposite side so
+  // the zero line isn't right at the edge.
+  if (minY === 0) minY = -Math.max(0.5, maxY * 0.1);
+  if (maxY === 0) maxY = Math.max(0.5, -minY * 0.1);
   const rangeY = maxY - minY || 1;
 
-  // "Nice number" tick selection — picks a step size from [1,2,5] × 10^n that
-  // gives roughly 3–5 gridlines across the range.
+  // "Nice number" tick selection — picks a step from [1,2,5] × 10^n.
+  // Rolling-avg range is typically small (-5 to +5), so sub-integer steps
+  // are common (0.5, 1, 2). Keep one decimal in labels when step < 1.
   const niceStep = (range, targetTicks = 4) => {
     const rough = range / targetTicks;
     const mag = Math.pow(10, Math.floor(Math.log10(rough)));
@@ -2362,30 +2396,48 @@ function PointTrendChart({ games }) {
     return step * mag;
   };
   const step = niceStep(rangeY);
+  const decimals = step < 1 ? 1 : 0;
+  const formatTick = (v) => {
+    const rounded = Number(v.toFixed(decimals));
+    if (rounded > 0) return `+${rounded.toFixed(decimals)}`;
+    return rounded.toFixed(decimals);
+  };
+
   // Build an ordered list of tick values within [minY, maxY] that are multiples of step.
   const ticks = [];
   const firstTick = Math.ceil(minY / step) * step;
   for (let v = firstTick; v <= maxY + 1e-9; v += step) {
-    ticks.push(Math.round(v)); // cumulative diff is always integer
+    ticks.push(Math.round(v / step) * step);
   }
-  // Always include 0 explicitly since it's the reference line.
-  if (!ticks.includes(0) && minY <= 0 && maxY >= 0) ticks.push(0);
-  ticks.sort((a, b) => a - b);
+  if (!ticks.some((t) => Math.abs(t) < 1e-9) && minY <= 0 && maxY >= 0) ticks.push(0);
+  // De-dupe float drift and sort.
+  const seen = new Set();
+  const uniqTicks = [];
+  ticks.sort((a, b) => a - b).forEach((t) => {
+    const k = t.toFixed(decimals + 3);
+    if (!seen.has(k)) {
+      seen.add(k);
+      uniqTicks.push(t);
+    }
+  });
 
-  const xFor = (idx) => PAD_L + (idx / maxIdx) * (W - PAD_L - PAD_R);
-  // Invert y — SVG y-axis grows downward.
-  const yFor = (cum) => {
-    const ratio = (cum - minY) / rangeY;
+  const xFor = (idx) =>
+    // With a single game, center the point horizontally.
+    maxIdx === 1
+      ? (PAD_L + W - PAD_R) / 2
+      : PAD_L + ((idx - 1) / (maxIdx - 1)) * (W - PAD_L - PAD_R);
+  const yFor = (val) => {
+    const ratio = (val - minY) / rangeY;
     return H - PAD_B - ratio * (H - PAD_B - PAD_T);
   };
 
   const pathD = points
-    .map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(p.idx).toFixed(2)} ${yFor(p.cum).toFixed(2)}`)
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(p.idx).toFixed(2)} ${yFor(p.val).toFixed(2)}`)
     .join(" ");
 
   const zeroY = yFor(0);
   const last = points[points.length - 1];
-  const lastPositive = last.cum >= 0;
+  const lastPositive = last.val >= 0;
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img">
@@ -2398,11 +2450,11 @@ function PointTrendChart({ games }) {
       </defs>
 
       {/* Horizontal gridlines + y-axis labels */}
-      {ticks.map((v) => {
+      {uniqTicks.map((v, i) => {
         const y = yFor(v);
-        const isZero = v === 0;
+        const isZero = Math.abs(v) < 1e-9;
         return (
-          <g key={v}>
+          <g key={i}>
             <line
               x1={PAD_L}
               x2={W - PAD_R}
@@ -2421,7 +2473,7 @@ function PointTrendChart({ games }) {
               fontWeight="700"
               fill={isZero ? C.navy : C.muted}
             >
-              {v > 0 ? `+${v}` : v}
+              {formatTick(v)}
             </text>
           </g>
         );
@@ -2429,7 +2481,7 @@ function PointTrendChart({ games }) {
 
       {/* Area under curve */}
       <path
-        d={`${pathD} L ${xFor(last.idx).toFixed(2)} ${zeroY.toFixed(2)} L ${xFor(0).toFixed(2)} ${zeroY.toFixed(2)} Z`}
+        d={`${pathD} L ${xFor(last.idx).toFixed(2)} ${zeroY.toFixed(2)} L ${xFor(points[0].idx).toFixed(2)} ${zeroY.toFixed(2)} Z`}
         fill="url(#trendFill)"
       />
       {/* The line itself */}
@@ -2444,7 +2496,7 @@ function PointTrendChart({ games }) {
       {/* Final point marker */}
       <circle
         cx={xFor(last.idx)}
-        cy={yFor(last.cum)}
+        cy={yFor(last.val)}
         r="3.5"
         fill={lastPositive ? C.coral : C.muted}
       />
