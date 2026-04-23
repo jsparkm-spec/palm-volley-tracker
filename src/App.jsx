@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext } from "react";
 import {
   Play,
   Users,
@@ -10,6 +10,7 @@ import {
   Trophy,
   X,
   Calendar,
+  CalendarDays,
   TrendingUp,
   Handshake,
   RefreshCw,
@@ -21,8 +22,41 @@ import {
   LogOut,
   Sparkles,
   KeyRound,
+  Flame,
+  Snowflake,
+  ArrowLeft,
+  Swords,
+  Medal,
+  Zap,
 } from "lucide-react";
 import Logomark from "./components/Logomark";
+
+// ---------- Profile navigation context ----------
+// Exposes a single function `openProfile(playerId)` that deep children can call
+// to navigate to a player's profile page, without prop-drilling through every view.
+// Unwrapped default is a no-op so component rendering is safe outside TrackerApp.
+const ProfileNavContext = createContext({ openProfile: () => {} });
+const useProfileNav = () => useContext(ProfileNavContext);
+
+// <PlayerName> — a name-shaped button that navigates to a player's profile.
+// Used everywhere a player's name appears in the app so the tap target is consistent.
+// Pass `fallback` for cases where the player was deleted (id no longer in the roster).
+function PlayerName({ id, name, className = "", style, fallback = "(removed)" }) {
+  const { openProfile } = useProfileNav();
+  if (!id) return <span className={className} style={style}>{fallback}</span>;
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        openProfile(id);
+      }}
+      className={`text-left hover:underline decoration-dotted underline-offset-2 ${className}`}
+      style={{ background: "transparent", padding: 0, ...style }}
+    >
+      {name || fallback}
+    </button>
+  );
+}
 
 // ---------- Brand tokens ----------
 // Palm Volley Pickle official palette, extracted from the logo SVG source files.
@@ -132,7 +166,11 @@ async function clearGroupFromStorage() {
 }
 
 // ---------- Stats ----------
-function computeStats(players, games) {
+// Computes per-player stats across a given set of games. Games can be passed
+// in any order — we sort chronologically internally for streak tracking.
+// `trackStreaks` controls whether streak fields are populated (only needed for
+// the all-time leaderboard; daily snapshots don't need them).
+function computeStats(players, games, { trackStreaks = true } = {}) {
   const byId = {};
   players.forEach((p) => {
     byId[p.id] = {
@@ -143,46 +181,72 @@ function computeStats(players, games) {
       losses: 0,
       pointsFor: 0,
       pointsAgainst: 0,
-      // Total points that COULD have been scored across all games the player
-      // appeared in. Per game, this is the winning team's score (the cap) —
-      // so a game that ended 11-9 contributes 11 to both teams' pointsPossible,
-      // a game to 15 that ended 15-13 contributes 15, etc. Handles games to
-      // any target without hardcoding 11.
       pointsPossible: 0,
+      // Streak tracking, only meaningful with trackStreaks=true:
+      //   currentStreak: positive = active win streak length, negative = loss streak
+      //   bestWinStreak: longest win streak ever (positive int)
+      //   bestLossStreak: longest loss streak ever (positive int)
+      //   _run: internal accumulator (stripped at the end)
+      currentStreak: 0,
+      bestWinStreak: 0,
+      bestLossStreak: 0,
+      _run: 0,
     };
   });
-  games.forEach((g) => {
+
+  // For streak tracking we need chronological order (oldest → newest).
+  // DB returns games newest-first, so we sort a copy. Tie-break on createdAt
+  // so same-day games keep their logged order.
+  const chronological = games
+    .slice()
+    .sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      const ac = a.createdAt || "";
+      const bc = b.createdAt || "";
+      return ac < bc ? -1 : ac > bc ? 1 : 0;
+    });
+
+  chronological.forEach((g) => {
     const t1Won = g.score1 > g.score2;
-    const cap = Math.max(g.score1, g.score2); // winning score = total possible per player
-    g.team1.forEach((pid) => {
-      if (!byId[pid]) return;
-      byId[pid].games += 1;
-      byId[pid][t1Won ? "wins" : "losses"] += 1;
-      byId[pid].pointsFor += g.score1;
-      byId[pid].pointsAgainst += g.score2;
-      byId[pid].pointsPossible += cap;
-    });
-    g.team2.forEach((pid) => {
-      if (!byId[pid]) return;
-      byId[pid].games += 1;
-      byId[pid][!t1Won ? "wins" : "losses"] += 1;
-      byId[pid].pointsFor += g.score2;
-      byId[pid].pointsAgainst += g.score1;
-      byId[pid].pointsPossible += cap;
-    });
+    const cap = Math.max(g.score1, g.score2);
+
+    const applyTo = (pid, teamScore, oppScore, won) => {
+      const s = byId[pid];
+      if (!s) return;
+      s.games += 1;
+      s[won ? "wins" : "losses"] += 1;
+      s.pointsFor += teamScore;
+      s.pointsAgainst += oppScore;
+      s.pointsPossible += cap;
+
+      if (trackStreaks) {
+        // Extend the current run if the outcome matches its sign, otherwise reset.
+        // _run is positive for an active win streak, negative for a loss streak.
+        if (won) {
+          s._run = s._run > 0 ? s._run + 1 : 1;
+          if (s._run > s.bestWinStreak) s.bestWinStreak = s._run;
+        } else {
+          s._run = s._run < 0 ? s._run - 1 : -1;
+          if (-s._run > s.bestLossStreak) s.bestLossStreak = -s._run;
+        }
+      }
+    };
+
+    g.team1.forEach((pid) => applyTo(pid, g.score1, g.score2, t1Won));
+    g.team2.forEach((pid) => applyTo(pid, g.score2, g.score1, !t1Won));
   });
-  return Object.values(byId).map((s) => ({
-    ...s,
-    winPct: s.games > 0 ? s.wins / s.games : 0,
-    diff: s.pointsFor - s.pointsAgainst,
-    ppg: s.games > 0 ? s.pointsFor / s.games : 0,
-    // Share of available points actually captured. Formula:
-    //   pointsFor / pointsPossible
-    // where pointsPossible sums the winning score of each game the player
-    // appeared in. A player who wins every game 11-0 = 100%. A player who
-    // loses every game 0-11 = 0%. A player losing 9-11 sits at ~82%.
-    pointsPct: s.pointsPossible > 0 ? s.pointsFor / s.pointsPossible : 0,
-  }));
+
+  return Object.values(byId).map((s) => {
+    const { _run, ...rest } = s;
+    return {
+      ...rest,
+      winPct: s.games > 0 ? s.wins / s.games : 0,
+      diff: s.pointsFor - s.pointsAgainst,
+      ppg: s.games > 0 ? s.pointsFor / s.games : 0,
+      pointsPct: s.pointsPossible > 0 ? s.pointsFor / s.pointsPossible : 0,
+      currentStreak: trackStreaks ? _run : 0,
+    };
+  });
 }
 
 function computePartnerships(players, games) {
@@ -615,11 +679,21 @@ function TrackerApp({ group, onLeaveGroup }) {
   const [players, setPlayers] = useState([]);
   const [games, setGames] = useState([]);
   const [view, setView] = useState("play");
+  // When non-null, the profile view is rendered on top of the normal tab.
+  // Set by openProfile(id); cleared by the profile's back button.
+  const [selectedPlayerId, setSelectedPlayerId] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [online, setOnline] = useState(true);
   const [toast, setToast] = useState(null);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
+
+  // Memoized so the context value reference is stable across renders —
+  // prevents unnecessary re-renders of consumers.
+  const profileNav = useMemo(
+    () => ({ openProfile: (id) => setSelectedPlayerId(id) }),
+    []
+  );
 
   const flash = useCallback((msg) => {
     setToast(msg);
@@ -725,71 +799,86 @@ function TrackerApp({ group, onLeaveGroup }) {
   const partnerships = useMemo(() => computePartnerships(players, games), [players, games]);
 
   return (
-    <div
-      className="min-h-screen"
-      style={{
-        background: C.cream,
-        fontFamily: BODY,
-        color: C.ink,
-        paddingBottom: "7.5rem",
-        backgroundImage: `radial-gradient(${C.babyBlue} 1px, transparent 1px)`,
-        backgroundSize: "28px 28px",
-      }}
-    >
-      <Header
-        group={group}
-        online={online}
-        syncing={syncing}
-        onRefresh={refresh}
-        onOpenSettings={() => setGroupModalOpen(true)}
-      />
-
-      <main className="max-w-xl mx-auto px-4 pt-5">
-        {!loaded ? (
-          <div className="text-center py-20 text-sm" style={{ color: C.muted }}>
-            <div className="inline-block animate-spin mb-3">
-              <RefreshCw size={20} />
-            </div>
-            <div>Loading {group.name}…</div>
-          </div>
-        ) : (
-          <>
-            {view === "play" && (
-              <PlayView players={players} onAddGame={addGame} onGoToPlayers={() => setView("players")} />
-            )}
-            {view === "games" && <GamesView games={games} players={players} onRemove={removeGame} />}
-            {view === "players" && (
-              <PlayersView players={players} stats={stats} onAdd={addPlayer} onRemove={removePlayer} />
-            )}
-            {view === "stats" && (
-              <StatsView stats={stats} partnerships={partnerships} games={games} players={players} />
-            )}
-          </>
+    <ProfileNavContext.Provider value={profileNav}>
+      <div
+        className="min-h-screen"
+        style={{
+          background: C.cream,
+          fontFamily: BODY,
+          color: C.ink,
+          paddingBottom: "7.5rem",
+          backgroundImage: `radial-gradient(${C.babyBlue} 1px, transparent 1px)`,
+          backgroundSize: "28px 28px",
+        }}
+      >
+        {/* Header hidden when on profile view — profile has its own header with back button */}
+        {!selectedPlayerId && (
+          <Header
+            group={group}
+            online={online}
+            syncing={syncing}
+            onRefresh={refresh}
+            onOpenSettings={() => setGroupModalOpen(true)}
+          />
         )}
-      </main>
 
-      <BottomNav view={view} setView={setView} />
+        <main className="max-w-xl mx-auto px-4 pt-5">
+          {!loaded ? (
+            <div className="text-center py-20 text-sm" style={{ color: C.muted }}>
+              <div className="inline-block animate-spin mb-3">
+                <RefreshCw size={20} />
+              </div>
+              <div>Loading {group.name}…</div>
+            </div>
+          ) : selectedPlayerId ? (
+            <PlayerProfileView
+              playerId={selectedPlayerId}
+              players={players}
+              games={games}
+              stats={stats}
+              partnerships={partnerships}
+              onBack={() => setSelectedPlayerId(null)}
+            />
+          ) : (
+            <>
+              {view === "play" && (
+                <PlayView players={players} onAddGame={addGame} onGoToPlayers={() => setView("players")} />
+              )}
+              {view === "games" && <GamesView games={games} players={players} onRemove={removeGame} />}
+              {view === "players" && (
+                <PlayersView players={players} stats={stats} onAdd={addPlayer} onRemove={removePlayer} />
+              )}
+              {view === "stats" && (
+                <StatsView stats={stats} partnerships={partnerships} games={games} players={players} />
+              )}
+            </>
+          )}
+        </main>
 
-      {toast && (
-        <div
-          className="fixed left-1/2 bottom-28 -translate-x-1/2 px-4 py-2.5 rounded-sm text-sm font-semibold shadow-lg z-50 whitespace-nowrap"
-          style={{ background: C.ink, color: C.cream, fontFamily: BODY }}
-        >
-          {toast}
-        </div>
-      )}
+        {/* Hide bottom nav on profile view for focus; back button handles navigation */}
+        {!selectedPlayerId && <BottomNav view={view} setView={setView} />}
 
-      {groupModalOpen && (
-        <GroupModal
-          group={group}
-          onClose={() => setGroupModalOpen(false)}
-          onLeave={async () => {
-            setGroupModalOpen(false);
-            await onLeaveGroup();
-          }}
-        />
-      )}
-    </div>
+        {toast && (
+          <div
+            className="fixed left-1/2 bottom-28 -translate-x-1/2 px-4 py-2.5 rounded-sm text-sm font-semibold shadow-lg z-50 whitespace-nowrap"
+            style={{ background: C.ink, color: C.cream, fontFamily: BODY }}
+          >
+            {toast}
+          </div>
+        )}
+
+        {groupModalOpen && (
+          <GroupModal
+            group={group}
+            onClose={() => setGroupModalOpen(false)}
+            onLeave={async () => {
+              setGroupModalOpen(false);
+              await onLeaveGroup();
+            }}
+          />
+        )}
+      </div>
+    </ProfileNavContext.Provider>
   );
 }
 
@@ -1428,18 +1517,22 @@ function PlayersView({ players, stats, onAdd, onRemove }) {
                 return (
                   <div
                     key={p.id}
-                    className="rounded-sm px-4 py-3 flex items-center justify-between"
+                    className="rounded-sm px-4 py-3 flex items-center justify-between gap-2"
                     style={{ background: "white", border: `1px solid ${C.line}` }}
                   >
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
                       <div
-                        className="w-10 h-10 rounded-sm flex items-center justify-center text-sm"
+                        className="w-10 h-10 rounded-sm flex items-center justify-center text-sm shrink-0"
                         style={{ background: C.ice, color: C.navy, fontFamily: DISPLAY }}
                       >
                         {p.name.slice(0, 2).toUpperCase()}
                       </div>
-                      <div>
-                        <div className="font-bold text-[15px] leading-tight">{p.name}</div>
+                      <div className="min-w-0">
+                        <PlayerName
+                          id={p.id}
+                          name={p.name}
+                          className="font-bold text-[15px] leading-tight truncate block"
+                        />
                         <div className="text-xs" style={{ color: C.muted }}>
                           {s && s.games > 0
                             ? `${s.games} ${s.games === 1 ? "game" : "games"} · ${s.wins}W-${s.losses}L`
@@ -1447,9 +1540,10 @@ function PlayersView({ players, stats, onAdd, onRemove }) {
                         </div>
                       </div>
                     </div>
+                    {s && s.currentStreak !== 0 && <StreakBadge streak={s.currentStreak} />}
                     <button
                       onClick={() => onRemove(p.id)}
-                      className="w-9 h-9 rounded-sm flex items-center justify-center"
+                      className="w-9 h-9 rounded-sm flex items-center justify-center shrink-0"
                       style={{ background: C.cream, border: `1px solid ${C.line}`, color: C.muted }}
                       aria-label="Remove player"
                     >
@@ -1468,6 +1562,8 @@ function PlayersView({ players, stats, onAdd, onRemove }) {
 // ---------- Games View ----------
 function GamesView({ games, players, onRemove }) {
   const nameOf = (id) => players.find((p) => p.id === id)?.name || "(removed)";
+  const today = todayISO();
+  const todaysGames = games.filter((g) => g.date === today);
 
   if (games.length === 0) {
     return (
@@ -1481,6 +1577,9 @@ function GamesView({ games, players, onRemove }) {
 
   return (
     <div className="space-y-3">
+      {todaysGames.length > 0 && (
+        <TodaysGamesCard games={todaysGames} players={players} />
+      )}
       <div className="text-[10px] uppercase tracking-[0.22em] font-bold px-1" style={{ color: C.muted }}>
         {games.length} {games.length === 1 ? "Game" : "Games"}
       </div>
@@ -1517,14 +1616,14 @@ function GamesView({ games, players, onRemove }) {
               </button>
             </div>
             <div className="p-4 grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
-              <TeamResult names={g.team1.map(nameOf)} score={g.score1} won={t1Won} side="left" />
+              <TeamResult teamPlayers={g.team1.map((id) => ({ id, name: nameOf(id) }))} score={g.score1} won={t1Won} side="left" />
               <div
                 className="text-[10px] uppercase tracking-[0.25em]"
                 style={{ color: C.muted, fontFamily: DISPLAY }}
               >
                 vs
               </div>
-              <TeamResult names={g.team2.map(nameOf)} score={g.score2} won={!t1Won} side="right" />
+              <TeamResult teamPlayers={g.team2.map((id) => ({ id, name: nameOf(id) }))} score={g.score2} won={!t1Won} side="right" />
             </div>
             {g.note && (
               <div
@@ -1541,7 +1640,7 @@ function GamesView({ games, players, onRemove }) {
   );
 }
 
-function TeamResult({ names, score, won, side }) {
+function TeamResult({ teamPlayers, score, won, side }) {
   return (
     <div style={{ textAlign: side === "left" ? "left" : "right" }}>
       <div
@@ -1551,9 +1650,13 @@ function TeamResult({ names, score, won, side }) {
         {won ? "Winner" : ""}
       </div>
       <div className="text-sm font-bold leading-tight">
-        {names.map((n, i) => (
+        {teamPlayers.map((p, i) => (
           <div key={i} className="truncate">
-            {n}
+            {p.id ? (
+              <PlayerName id={p.id} name={p.name} fallback="(removed)" />
+            ) : (
+              p.name
+            )}
           </div>
         ))}
       </div>
@@ -1571,7 +1674,808 @@ function TeamResult({ names, score, won, side }) {
   );
 }
 
-// ---------- Stats View ----------
+// ---------- Today's Games Card ----------
+// Pinned to the top of the Games tab when today has at least one game.
+// Shows game count, total points scored today, and a mini leaderboard
+// ranked by wins today (tie-broken by points scored today).
+function TodaysGamesCard({ games, players }) {
+  const todayStats = useMemo(
+    () => computeStats(players, games, { trackStreaks: false }),
+    [players, games]
+  );
+  const active = todayStats
+    .filter((s) => s.games > 0)
+    .sort((a, b) => b.wins - a.wins || b.pointsFor - a.pointsFor);
+  const totalPoints = games.reduce((sum, g) => sum + g.score1 + g.score2, 0);
+
+  return (
+    <div
+      className="rounded-sm overflow-hidden"
+      style={{
+        background: "white",
+        border: `1px solid ${C.line}`,
+        boxShadow: "0 6px 20px -10px rgba(13,47,69,0.2)",
+      }}
+    >
+      <div
+        className="px-4 py-3 flex items-center gap-2.5"
+        style={{
+          background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navyDeep} 100%)`,
+          color: C.cream,
+        }}
+      >
+        <CalendarDays size={16} strokeWidth={2.4} color={C.sky} />
+        <div className="flex-1">
+          <div
+            className="text-[11px] uppercase tracking-[0.22em] font-bold"
+            style={{ fontFamily: BODY }}
+          >
+            Today
+          </div>
+          <div className="text-[10px] opacity-85" style={{ fontFamily: BODY }}>
+            {games.length} {games.length === 1 ? "game" : "games"} · {totalPoints} points
+          </div>
+        </div>
+      </div>
+      <div>
+        {active.map((s, idx) => {
+          const isTop = idx === 0;
+          return (
+            <div
+              key={s.id}
+              className="px-4 py-2.5 flex items-center gap-3"
+              style={{ borderTop: idx === 0 ? "none" : `1px solid ${C.line}` }}
+            >
+              <div
+                className="w-7 h-7 rounded-sm flex items-center justify-center text-xs shrink-0"
+                style={{
+                  background: isTop ? C.coral : C.cream,
+                  color: isTop ? C.cream : C.muted,
+                  fontFamily: DISPLAY,
+                  border: isTop ? "none" : `1px solid ${C.line}`,
+                }}
+              >
+                {idx + 1}
+              </div>
+              <div className="flex-1 min-w-0">
+                <PlayerName
+                  id={s.id}
+                  name={s.name}
+                  className="font-bold text-[14px] leading-tight truncate block"
+                />
+                <div className="text-[11px]" style={{ color: C.muted }}>
+                  {s.games}G · {s.pointsFor} pts
+                </div>
+              </div>
+              <div className="text-right">
+                <div
+                  className="text-lg leading-none"
+                  style={{ fontFamily: DISPLAY, color: C.navy }}
+                >
+                  {s.wins}-{s.losses}
+                </div>
+                <div
+                  className="text-[9px] uppercase tracking-[0.18em] font-bold"
+                  style={{ color: C.muted }}
+                >
+                  record
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Player Profile View ----------
+// Full-screen profile replacing the current view. Header has back button + avatar.
+// Sections: hero metrics, point trend chart, recent games (last 10),
+// partnerships breakdown, head-to-head records.
+function PlayerProfileView({ playerId, players, games, stats, partnerships, onBack }) {
+  const player = players.find((p) => p.id === playerId);
+  const playerStats = stats.find((s) => s.id === playerId);
+
+  // All games this player appeared in, chronological (oldest → newest) for charting.
+  // Each enriched with computed pov (team/opponent/scores/outcome) for render.
+  const playerGames = useMemo(() => {
+    const list = games
+      .filter((g) => g.team1.includes(playerId) || g.team2.includes(playerId))
+      .map((g) => {
+        const onTeam1 = g.team1.includes(playerId);
+        const teamScore = onTeam1 ? g.score1 : g.score2;
+        const oppScore = onTeam1 ? g.score2 : g.score1;
+        const teammates = (onTeam1 ? g.team1 : g.team2).filter((id) => id !== playerId);
+        const opponents = onTeam1 ? g.team2 : g.team1;
+        return {
+          ...g,
+          teamScore,
+          oppScore,
+          teammates,
+          opponents,
+          won: teamScore > oppScore,
+          cap: Math.max(g.score1, g.score2),
+        };
+      })
+      .sort((a, b) => {
+        if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+        return (a.createdAt || "") < (b.createdAt || "") ? -1 : 1;
+      });
+    return list;
+  }, [games, playerId]);
+
+  // Partnership records specifically for this player: for each player they've
+  // ever teamed with, games played together + wins + pointsPct + point diff together.
+  const teammateRecords = useMemo(() => {
+    const map = {};
+    playerGames.forEach((g) => {
+      g.teammates.forEach((tid) => {
+        const t = players.find((p) => p.id === tid);
+        if (!t) return;
+        if (!map[tid]) {
+          map[tid] = {
+            id: tid,
+            name: t.name,
+            games: 0,
+            wins: 0,
+            pointsFor: 0,
+            pointsAgainst: 0,
+            pointsPossible: 0,
+          };
+        }
+        map[tid].games += 1;
+        if (g.won) map[tid].wins += 1;
+        map[tid].pointsFor += g.teamScore;
+        map[tid].pointsAgainst += g.oppScore;
+        map[tid].pointsPossible += g.cap;
+      });
+    });
+    return Object.values(map)
+      .map((r) => ({
+        ...r,
+        winPct: r.games > 0 ? r.wins / r.games : 0,
+        pointsPct: r.pointsPossible > 0 ? r.pointsFor / r.pointsPossible : 0,
+        diff: r.pointsFor - r.pointsAgainst,
+      }))
+      .sort((a, b) => b.games - a.games || b.winPct - a.winPct);
+  }, [playerGames, players]);
+
+  // Head-to-head records: for each player this player has faced as an opponent,
+  // games against + player's wins + pointsPct + point diff against them.
+  const opponentRecords = useMemo(() => {
+    const map = {};
+    playerGames.forEach((g) => {
+      g.opponents.forEach((oid) => {
+        const o = players.find((p) => p.id === oid);
+        if (!o) return;
+        if (!map[oid]) {
+          map[oid] = {
+            id: oid,
+            name: o.name,
+            games: 0,
+            wins: 0,
+            pointsFor: 0,
+            pointsAgainst: 0,
+            pointsPossible: 0,
+          };
+        }
+        map[oid].games += 1;
+        if (g.won) map[oid].wins += 1;
+        map[oid].pointsFor += g.teamScore;
+        map[oid].pointsAgainst += g.oppScore;
+        map[oid].pointsPossible += g.cap;
+      });
+    });
+    return Object.values(map)
+      .map((r) => ({
+        ...r,
+        winPct: r.games > 0 ? r.wins / r.games : 0,
+        pointsPct: r.pointsPossible > 0 ? r.pointsFor / r.pointsPossible : 0,
+        diff: r.pointsFor - r.pointsAgainst,
+      }))
+      .sort((a, b) => b.games - a.games || b.winPct - a.winPct);
+  }, [playerGames, players]);
+
+  // Highlight picks — require a minimum sample size so a lucky 1-0 doesn't
+  // dethrone a real 8-3 record. Primary rank = win %, tiebreak = point diff.
+  const HIGHLIGHT_MIN_GAMES = 3;
+  const bestPartner = useMemo(() => {
+    const eligible = teammateRecords.filter((r) => r.games >= HIGHLIGHT_MIN_GAMES);
+    if (eligible.length === 0) return null;
+    return eligible.slice().sort(
+      (a, b) => b.winPct - a.winPct || b.diff - a.diff
+    )[0];
+  }, [teammateRecords]);
+  // Toughest = where the player has the WORST record against (lowest win %).
+  const toughestOpponent = useMemo(() => {
+    const eligible = opponentRecords.filter((r) => r.games >= HIGHLIGHT_MIN_GAMES);
+    if (eligible.length === 0) return null;
+    return eligible.slice().sort(
+      (a, b) => a.winPct - b.winPct || a.diff - b.diff
+    )[0];
+  }, [opponentRecords]);
+  // Easiest = best record against, same ranking as bestPartner.
+  const easiestOpponent = useMemo(() => {
+    const eligible = opponentRecords.filter((r) => r.games >= HIGHLIGHT_MIN_GAMES);
+    if (eligible.length === 0) return null;
+    return eligible.slice().sort(
+      (a, b) => b.winPct - a.winPct || b.diff - a.diff
+    )[0];
+  }, [opponentRecords]);
+
+  if (!player) {
+    return (
+      <div className="pt-2">
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-sm text-[11px] uppercase tracking-[0.22em] font-bold mb-6 transition-all active:scale-[0.98]"
+          style={{
+            background: C.navy,
+            color: C.cream,
+            fontFamily: BODY,
+            boxShadow: "0 4px 12px -4px rgba(13,47,69,0.3)",
+          }}
+        >
+          <ArrowLeft size={14} strokeWidth={2.6} /> Back
+        </button>
+        <EmptyCard
+          icon={<Users size={24} color={C.coral} />}
+          title="Player not found"
+          body="This player may have been removed from the group."
+        />
+      </div>
+    );
+  }
+
+  const hasGames = playerStats && playerStats.games > 0;
+
+  return (
+    <div className="space-y-4">
+      {/* Back button + profile header */}
+      <div className="pt-2">
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-sm text-[11px] uppercase tracking-[0.22em] font-bold mb-5 transition-all active:scale-[0.98]"
+          style={{
+            background: C.navy,
+            color: C.cream,
+            fontFamily: BODY,
+            boxShadow: "0 4px 12px -4px rgba(13,47,69,0.3)",
+          }}
+        >
+          <ArrowLeft size={14} strokeWidth={2.6} /> Back
+        </button>
+        <div className="flex items-center gap-3">
+          <div
+            className="w-14 h-14 rounded-sm flex items-center justify-center text-lg shrink-0"
+            style={{ background: C.navy, color: C.cream, fontFamily: DISPLAY }}
+          >
+            {player.name.slice(0, 2).toUpperCase()}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] uppercase tracking-[0.22em] font-bold" style={{ color: C.muted }}>
+              Profile
+            </div>
+            <h2
+              className="text-2xl leading-none uppercase truncate"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em", color: C.ink }}
+            >
+              {player.name}
+            </h2>
+          </div>
+          {playerStats && playerStats.currentStreak !== 0 && (
+            <StreakBadge streak={playerStats.currentStreak} />
+          )}
+        </div>
+      </div>
+
+      {!hasGames ? (
+        <EmptyCard
+          icon={<BarChart3 size={24} color={C.coral} />}
+          title="No games yet"
+          body={`${player.name} hasn't logged any games. Stats and charts populate as games are recorded.`}
+        />
+      ) : (
+        <>
+          {/* Hero metrics grid — 2 columns x 3 rows = 6 cards */}
+          <div className="grid grid-cols-2 gap-2">
+            <MetricCard
+              label="Point Diff"
+              value={`${playerStats.diff >= 0 ? "+" : ""}${playerStats.diff}`}
+              accent={playerStats.diff >= 0 ? C.coral : C.muted}
+            />
+            <MetricCard
+              label="Record"
+              value={`${playerStats.wins}-${playerStats.losses}`}
+              accent={C.navyDeep}
+            />
+            <MetricCard
+              label="Win %"
+              value={`${(playerStats.winPct * 100).toFixed(0)}%`}
+              accent={C.coral}
+            />
+            <MetricCard
+              label="Points %"
+              value={`${(playerStats.pointsPct * 100).toFixed(1)}%`}
+              accent={C.coral}
+            />
+            <MetricCard
+              label="Best Win Streak"
+              value={playerStats.bestWinStreak}
+              accent={C.coral}
+            />
+            <MetricCard
+              label="Best Loss Streak"
+              value={playerStats.bestLossStreak}
+              accent={C.muted}
+            />
+          </div>
+
+          {/* Highlight cards — Best Partner, Toughest Opponent, Easiest Opponent.
+              Only render when the player has at least one qualifying relationship
+              (3+ games). Render each independently so you see what you have. */}
+          {(bestPartner || toughestOpponent || easiestOpponent) && (
+            <div className="space-y-2">
+              {bestPartner && (
+                <HighlightCard
+                  icon={<Medal size={18} strokeWidth={2.4} color={C.cream} />}
+                  iconBg={C.coral}
+                  label="Best Partner"
+                  record={bestPartner}
+                  valueColor={C.coral}
+                />
+              )}
+              {toughestOpponent && (
+                <HighlightCard
+                  icon={<Swords size={18} strokeWidth={2.4} color={C.cream} />}
+                  iconBg={C.navyDeep}
+                  label="Toughest Opponent"
+                  record={toughestOpponent}
+                  valueColor={C.muted}
+                />
+              )}
+              {easiestOpponent && (
+                <HighlightCard
+                  icon={<Zap size={18} strokeWidth={2.4} color={C.cream} />}
+                  iconBg={C.coral}
+                  label="Easiest Opponent"
+                  record={easiestOpponent}
+                  valueColor={C.coral}
+                />
+              )}
+            </div>
+          )}
+
+          {/* Point trend chart */}
+          {playerGames.length >= 2 && (
+            <div
+              className="rounded-sm overflow-hidden"
+              style={{ background: "white", border: `1px solid ${C.line}` }}
+            >
+              <div
+                className="px-4 py-3 flex items-center gap-2"
+                style={{ background: C.cream, borderBottom: `1px solid ${C.line}` }}
+              >
+                <TrendingUp size={14} color={C.coral} strokeWidth={2.4} />
+                <span
+                  className="text-[11px] uppercase tracking-[0.22em] font-bold"
+                  style={{ color: C.navy, fontFamily: BODY }}
+                >
+                  Point Trend
+                </span>
+                <span
+                  className="text-[10px] ml-auto"
+                  style={{ color: C.muted }}
+                >
+                  {playerGames.length} games
+                </span>
+              </div>
+              <div className="p-4">
+                <PointTrendChart games={playerGames} />
+              </div>
+            </div>
+          )}
+
+          {/* Recent games — last 4, newest first */}
+          <div>
+            <div
+              className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2 px-1"
+              style={{ color: C.muted }}
+            >
+              Recent Games · last {Math.min(playerGames.length, 4)}
+            </div>
+            <div className="space-y-2">
+              {playerGames
+                .slice()
+                .reverse()
+                .slice(0, 4)
+                .map((g) => (
+                  <ProfileGameRow key={g.id} g={g} players={players} />
+                ))}
+            </div>
+          </div>
+
+          {/* Partnerships */}
+          {teammateRecords.length > 0 && (
+            <div>
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2 px-1 flex items-center gap-1.5"
+                style={{ color: C.muted }}
+              >
+                <Handshake size={11} /> Partners
+              </div>
+              <div className="space-y-2">
+                {teammateRecords.map((r) => (
+                  <div
+                    key={r.id}
+                    className="rounded-sm px-4 py-2.5 flex items-center justify-between"
+                    style={{ background: "white", border: `1px solid ${C.line}` }}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <PlayerName
+                        id={r.id}
+                        name={r.name}
+                        className="font-bold text-[14px] truncate block"
+                      />
+                      <div className="text-[11px]" style={{ color: C.muted }}>
+                        {r.games} {r.games === 1 ? "game" : "games"} together
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-base" style={{ color: C.navy, fontFamily: DISPLAY }}>
+                        {r.wins}-{r.games - r.wins}
+                      </div>
+                      <div className="text-[10px] font-semibold" style={{ color: C.muted }}>
+                        {(r.winPct * 100).toFixed(0)}%
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Head-to-head */}
+          {opponentRecords.length > 0 && (
+            <div>
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2 px-1 flex items-center gap-1.5"
+                style={{ color: C.muted }}
+              >
+                <Swords size={11} /> Head-to-Head
+              </div>
+              <div className="space-y-2">
+                {opponentRecords.map((r) => {
+                  const losses = r.games - r.wins;
+                  const favor = r.wins >= losses;
+                  return (
+                    <div
+                      key={r.id}
+                      className="rounded-sm px-4 py-2.5 flex items-center justify-between"
+                      style={{ background: "white", border: `1px solid ${C.line}` }}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <PlayerName
+                          id={r.id}
+                          name={r.name}
+                          className="font-bold text-[14px] truncate block"
+                        />
+                        <div className="text-[11px]" style={{ color: C.muted }}>
+                          vs this opponent {r.games} {r.games === 1 ? "time" : "times"}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div
+                          className="text-base"
+                          style={{ color: favor ? C.coral : C.muted, fontFamily: DISPLAY }}
+                        >
+                          {r.wins}-{losses}
+                        </div>
+                        <div className="text-[10px] font-semibold" style={{ color: C.muted }}>
+                          {(r.winPct * 100).toFixed(0)}%
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Compact row for a single game on the profile, showing date, teammates,
+// opponents, the score, and a W/L indicator.
+function ProfileGameRow({ g, players }) {
+  const nameOf = (id) => players.find((p) => p.id === id)?.name || "(removed)";
+  return (
+    <div
+      className="rounded-sm overflow-hidden"
+      style={{ background: "white", border: `1px solid ${C.line}` }}
+    >
+      <div
+        className="px-3 py-1.5 flex items-center justify-between"
+        style={{ background: C.cream, borderBottom: `1px solid ${C.line}` }}
+      >
+        <span className="text-xs font-semibold" style={{ color: C.muted }}>
+          {fmtDate(g.date)} · {g.mode}
+        </span>
+        <span
+          className="text-[10px] uppercase tracking-[0.18em] font-bold px-2 py-0.5 rounded-sm"
+          style={{
+            background: g.won ? C.coral : C.ice,
+            color: g.won ? C.cream : C.navyDeep,
+          }}
+        >
+          {g.won ? "Won" : "Lost"}
+        </span>
+      </div>
+      <div className="px-3 py-2.5 flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          {g.teammates.length > 0 && (
+            <div className="text-[11px]" style={{ color: C.muted }}>
+              With:{" "}
+              {g.teammates.map((id, i) => (
+                <React.Fragment key={id}>
+                  {i > 0 && ", "}
+                  <PlayerName id={id} name={nameOf(id)} className="font-semibold" style={{ color: C.ink }} />
+                </React.Fragment>
+              ))}
+            </div>
+          )}
+          <div className="text-[11px]" style={{ color: C.muted }}>
+            vs:{" "}
+            {g.opponents.map((id, i) => (
+              <React.Fragment key={id}>
+                {i > 0 && ", "}
+                <PlayerName id={id} name={nameOf(id)} className="font-semibold" style={{ color: C.ink }} />
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+        <div
+          className="text-2xl shrink-0"
+          style={{
+            fontFamily: DISPLAY,
+            color: g.won ? C.navy : C.muted,
+            letterSpacing: "0.01em",
+          }}
+        >
+          {g.teamScore}-{g.oppScore}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Highlight Card ----------
+// Reusable card used for Best Partner / Toughest / Easiest Opponent.
+// Shows a colored icon tile, a label, the featured player's name (tappable),
+// record, win %, and point diff.
+function HighlightCard({ icon, iconBg, label, record, valueColor }) {
+  const losses = record.games - record.wins;
+  return (
+    <div
+      className="rounded-sm p-3 flex items-center gap-3"
+      style={{
+        background: "white",
+        border: `1px solid ${C.line}`,
+        boxShadow: "0 2px 8px -4px rgba(13,47,69,0.08)",
+      }}
+    >
+      <div
+        className="w-11 h-11 rounded-sm flex items-center justify-center shrink-0"
+        style={{ background: iconBg }}
+      >
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div
+          className="text-[10px] uppercase tracking-[0.22em] font-bold"
+          style={{ color: C.muted }}
+        >
+          {label}
+        </div>
+        <PlayerName
+          id={record.id}
+          name={record.name}
+          className="font-bold text-[15px] leading-tight truncate block uppercase"
+          style={{ fontFamily: DISPLAY, letterSpacing: "0.01em", color: C.ink }}
+        />
+        <div className="text-[11px] mt-0.5" style={{ color: C.muted }}>
+          {record.games} {record.games === 1 ? "game" : "games"} · {record.diff >= 0 ? "+" : ""}
+          {record.diff} diff
+        </div>
+      </div>
+      <div className="text-right shrink-0">
+        <div
+          className="text-xl leading-none"
+          style={{ fontFamily: DISPLAY, color: valueColor }}
+        >
+          {(record.winPct * 100).toFixed(0)}%
+        </div>
+        <div
+          className="text-[10px] font-bold mt-0.5"
+          style={{ color: C.muted, fontFamily: DISPLAY }}
+        >
+          {record.wins}-{losses}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// SVG line chart of the player's cumulative point differential over time.
+// X axis: game number (1 → total games). Y axis: running sum of (teamScore - oppScore).
+// Shows y-axis gridlines + labels at "nice" round values, and x-axis endpoints.
+// Handwritten SVG to avoid any charting library — keeps bundle light.
+function PointTrendChart({ games }) {
+  // Internal coordinate system. Uses preserveAspectRatio="xMidYMid meet"
+  // by default, so labels keep their aspect ratio when the chart resizes.
+  const W = 320;
+  const H = 160;
+  const PAD_L = 34; // left padding (y-axis labels)
+  const PAD_R = 12;
+  const PAD_T = 10;
+  const PAD_B = 22; // bottom padding (x-axis labels)
+
+  // Build running cumulative differential. Synthetic anchor at idx=0, cum=0 so
+  // the line starts from the origin rather than jumping in from offscreen.
+  const points = [{ idx: 0, cum: 0 }];
+  let running = 0;
+  games.forEach((g, i) => {
+    running += g.teamScore - g.oppScore;
+    points.push({ idx: i + 1, cum: running });
+  });
+
+  const maxIdx = points[points.length - 1].idx;
+  const cums = points.map((p) => p.cum);
+  // Domain always includes 0 so the zero line is visible.
+  // Add a small padding to the top/bottom of the range so the line doesn't
+  // hug the edges.
+  let minY = Math.min(0, ...cums);
+  let maxY = Math.max(0, ...cums);
+  const padY = Math.max(2, Math.round((maxY - minY) * 0.1));
+  if (minY < 0) minY -= padY;
+  if (maxY > 0) maxY += padY;
+  // If the player is entirely positive or entirely negative, pad the opposite side too
+  // so the zero line isn't right on the edge.
+  if (minY === 0) minY = -Math.max(2, Math.round(maxY * 0.1));
+  if (maxY === 0) maxY = Math.max(2, Math.round(-minY * 0.1));
+  const rangeY = maxY - minY || 1;
+
+  // "Nice number" tick selection — picks a step size from [1,2,5] × 10^n that
+  // gives roughly 3–5 gridlines across the range.
+  const niceStep = (range, targetTicks = 4) => {
+    const rough = range / targetTicks;
+    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    const norm = rough / mag;
+    let step;
+    if (norm < 1.5) step = 1;
+    else if (norm < 3) step = 2;
+    else if (norm < 7) step = 5;
+    else step = 10;
+    return step * mag;
+  };
+  const step = niceStep(rangeY);
+  // Build an ordered list of tick values within [minY, maxY] that are multiples of step.
+  const ticks = [];
+  const firstTick = Math.ceil(minY / step) * step;
+  for (let v = firstTick; v <= maxY + 1e-9; v += step) {
+    ticks.push(Math.round(v)); // cumulative diff is always integer
+  }
+  // Always include 0 explicitly since it's the reference line.
+  if (!ticks.includes(0) && minY <= 0 && maxY >= 0) ticks.push(0);
+  ticks.sort((a, b) => a - b);
+
+  const xFor = (idx) => PAD_L + (idx / maxIdx) * (W - PAD_L - PAD_R);
+  // Invert y — SVG y-axis grows downward.
+  const yFor = (cum) => {
+    const ratio = (cum - minY) / rangeY;
+    return H - PAD_B - ratio * (H - PAD_B - PAD_T);
+  };
+
+  const pathD = points
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(p.idx).toFixed(2)} ${yFor(p.cum).toFixed(2)}`)
+    .join(" ");
+
+  const zeroY = yFor(0);
+  const last = points[points.length - 1];
+  const lastPositive = last.cum >= 0;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img">
+      {/* Gradient fill under the line */}
+      <defs>
+        <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={C.coral} stopOpacity="0.25" />
+          <stop offset="100%" stopColor={C.coral} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+
+      {/* Horizontal gridlines + y-axis labels */}
+      {ticks.map((v) => {
+        const y = yFor(v);
+        const isZero = v === 0;
+        return (
+          <g key={v}>
+            <line
+              x1={PAD_L}
+              x2={W - PAD_R}
+              y1={y}
+              y2={y}
+              stroke={isZero ? C.babyBlue : C.line}
+              strokeWidth="1"
+              strokeDasharray={isZero ? "3 3" : "none"}
+            />
+            <text
+              x={PAD_L - 6}
+              y={y + 3}
+              textAnchor="end"
+              fontSize="9"
+              fontFamily={BODY}
+              fontWeight="700"
+              fill={isZero ? C.navy : C.muted}
+            >
+              {v > 0 ? `+${v}` : v}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Area under curve */}
+      <path
+        d={`${pathD} L ${xFor(last.idx).toFixed(2)} ${zeroY.toFixed(2)} L ${xFor(0).toFixed(2)} ${zeroY.toFixed(2)} Z`}
+        fill="url(#trendFill)"
+      />
+      {/* The line itself */}
+      <path
+        d={pathD}
+        fill="none"
+        stroke={lastPositive ? C.coral : C.muted}
+        strokeWidth="2"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      {/* Final point marker */}
+      <circle
+        cx={xFor(last.idx)}
+        cy={yFor(last.cum)}
+        r="3.5"
+        fill={lastPositive ? C.coral : C.muted}
+      />
+
+      {/* X-axis endpoints — game number labels */}
+      <text
+        x={xFor(1)}
+        y={H - 6}
+        textAnchor="start"
+        fontSize="9"
+        fontFamily={BODY}
+        fontWeight="700"
+        fill={C.muted}
+      >
+        Game 1
+      </text>
+      <text
+        x={xFor(maxIdx)}
+        y={H - 6}
+        textAnchor="end"
+        fontSize="9"
+        fontFamily={BODY}
+        fontWeight="700"
+        fill={C.muted}
+      >
+        Game {maxIdx}
+      </text>
+    </svg>
+  );
+}
+
 function StatsView({ stats, partnerships, games, players }) {
   const [sortKey, setSortKey] = useState("winPct");
   const [minGames, setMinGames] = useState(0);
@@ -1722,7 +2626,11 @@ function StatsView({ stats, partnerships, games, players }) {
                   {idx + 1}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="font-bold text-[14px] leading-tight truncate">{s.name}</div>
+                  <PlayerName
+                    id={s.id}
+                    name={s.name}
+                    className="font-bold text-[14px] leading-tight truncate block"
+                  />
                   <div className="text-[11px]" style={{ color: C.muted }}>
                     {s.games}G · {s.wins}-{s.losses} · {s.diff >= 0 ? "+" : ""}
                     {s.diff} diff
@@ -1757,6 +2665,10 @@ function StatsView({ stats, partnerships, games, players }) {
         </div>
       </div>
 
+      <DailyLeaderboard games={games} players={players} />
+
+      <HotStreaksSection stats={stats} />
+
       {topPartnership && (
         <div
           className="rounded-sm p-4"
@@ -1772,7 +2684,8 @@ function StatsView({ stats, partnerships, games, players }) {
             </span>
           </div>
           <div className="text-lg leading-tight uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
-            {topPartnership.aName} & {topPartnership.bName}
+            <PlayerName id={topPartnership.a} name={topPartnership.aName} /> &{" "}
+            <PlayerName id={topPartnership.b} name={topPartnership.bName} />
           </div>
           <div className="text-xs mt-1" style={{ color: C.muted }}>
             {topPartnership.wins}-{topPartnership.games - topPartnership.wins} ·{" "}
@@ -1801,7 +2714,8 @@ function StatsView({ stats, partnerships, games, players }) {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="font-bold text-sm truncate">
-                      {p.aName} & {p.bName}
+                      <PlayerName id={p.a} name={p.aName} /> &{" "}
+                      <PlayerName id={p.b} name={p.bName} />
                     </div>
                     <div className="text-[11px]" style={{ color: C.muted }}>
                       {p.games} {p.games === 1 ? "game" : "games"}
@@ -1833,6 +2747,275 @@ function StatsView({ stats, partnerships, games, players }) {
           CSV files import cleanly into Google Sheets — File → Import → Upload.
         </p>
       </div>
+    </div>
+  );
+}
+
+// ---------- Daily Leaderboard ----------
+// Same 5 sort keys as the all-time leaderboard, but scoped to games on a
+// selected date. Defaults to today; user can pick any past date. If the chosen
+// date has no games, renders an empty state.
+function DailyLeaderboard({ games, players }) {
+  const [date, setDate] = useState(todayISO());
+  const [sortKey, setSortKey] = useState("winPct");
+
+  const gamesForDate = useMemo(
+    () => games.filter((g) => g.date === date),
+    [games, date]
+  );
+
+  const dayStats = useMemo(
+    () => computeStats(players, gamesForDate, { trackStreaks: false }),
+    [players, gamesForDate]
+  );
+
+  const sorted = useMemo(() => {
+    const active = dayStats.filter((s) => s.games > 0);
+    return active.slice().sort((a, b) => {
+      if (sortKey === "winPct") {
+        if (b.winPct !== a.winPct) return b.winPct - a.winPct;
+        return b.wins - a.wins;
+      }
+      if (sortKey === "pointsPct") {
+        if (b.pointsPct !== a.pointsPct) return b.pointsPct - a.pointsPct;
+        return b.pointsFor - a.pointsFor;
+      }
+      return (b[sortKey] ?? 0) - (a[sortKey] ?? 0);
+    });
+  }, [dayStats, sortKey]);
+
+  // Dates that actually have games — used to pre-validate the date picker
+  const gameDates = useMemo(() => {
+    const set = new Set(games.map((g) => g.date));
+    return Array.from(set).sort().reverse(); // most recent first
+  }, [games]);
+
+  const friendlyDate = (iso) => {
+    if (iso === todayISO()) return "Today";
+    return fmtDate(iso);
+  };
+
+  const formatValue = (s, key) => {
+    if (key === "winPct") return (s.winPct * 100).toFixed(0) + "%";
+    if (key === "pointsPct") return (s.pointsPct * 100).toFixed(1) + "%";
+    if (key === "ppg") return s.ppg.toFixed(1);
+    return s[key];
+  };
+  const formatLabel = (key) => {
+    if (key === "winPct") return "win rate";
+    if (key === "pointsPct") return "pts won";
+    if (key === "ppg") return "avg PF";
+    return key;
+  };
+
+  return (
+    <div
+      className="rounded-sm overflow-hidden"
+      style={{ background: "white", border: `1px solid ${C.line}` }}
+    >
+      <div
+        className="px-4 py-3 flex items-center justify-between"
+        style={{ background: C.navyDeep, color: C.cream }}
+      >
+        <div className="flex items-center gap-2">
+          <CalendarDays size={14} color={C.sky} />
+          <span
+            className="text-[11px] uppercase tracking-[0.22em] font-bold"
+            style={{ fontFamily: BODY }}
+          >
+            By Day
+          </span>
+        </div>
+        <select
+          value={sortKey}
+          onChange={(e) => setSortKey(e.target.value)}
+          className="text-[11px] font-bold uppercase tracking-[0.12em] px-2 py-1 rounded-sm outline-none"
+          style={{ background: C.navy, color: C.cream, border: `1px solid rgba(255,255,255,0.1)` }}
+        >
+          <option value="winPct">Win %</option>
+          <option value="pointsPct">Points %</option>
+          <option value="wins">Wins</option>
+          <option value="games">Games</option>
+          <option value="diff">Point Diff</option>
+          <option value="ppg">Avg PF</option>
+        </select>
+      </div>
+
+      <div className="px-4 pt-3 pb-2 flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-[0.22em] font-bold" style={{ color: C.muted }}>
+          Date
+        </span>
+        <input
+          type="date"
+          value={date}
+          max={todayISO()}
+          onChange={(e) => setDate(e.target.value)}
+          className="flex-1 text-sm font-semibold bg-transparent outline-none"
+          style={{ color: C.ink, fontFamily: BODY }}
+        />
+        <span className="text-[10px] font-semibold shrink-0" style={{ color: C.muted }}>
+          {friendlyDate(date)} · {gamesForDate.length} {gamesForDate.length === 1 ? "game" : "games"}
+        </span>
+      </div>
+
+      <div className="pb-2">
+        {sorted.length === 0 ? (
+          <div className="text-center py-6 text-sm" style={{ color: C.muted }}>
+            {gameDates.length === 0
+              ? "No games yet."
+              : "No games on this date."}
+          </div>
+        ) : (
+          sorted.map((s, idx) => (
+            <div
+              key={s.id}
+              className="px-4 py-2.5 flex items-center gap-3"
+              style={{ borderTop: idx === 0 ? "none" : `1px solid ${C.line}` }}
+            >
+              <div
+                className="w-7 h-7 rounded-sm flex items-center justify-center text-xs"
+                style={{
+                  background: idx === 0 ? C.coral : C.cream,
+                  color: idx === 0 ? C.cream : C.muted,
+                  fontFamily: DISPLAY,
+                  border: idx === 0 ? "none" : `1px solid ${C.line}`,
+                }}
+              >
+                {idx + 1}
+              </div>
+              <div className="flex-1 min-w-0">
+                <PlayerName
+                  id={s.id}
+                  name={s.name}
+                  className="font-bold text-[14px] leading-tight truncate block"
+                />
+                <div className="text-[11px]" style={{ color: C.muted }}>
+                  {s.games}G · {s.wins}-{s.losses} · {s.diff >= 0 ? "+" : ""}
+                  {s.diff} diff
+                </div>
+              </div>
+              <div className="text-right">
+                <div
+                  className="text-lg leading-none"
+                  style={{ fontFamily: DISPLAY, color: C.navy }}
+                >
+                  {formatValue(s, sortKey)}
+                </div>
+                <div
+                  className="text-[9px] uppercase tracking-[0.18em] font-bold"
+                  style={{ color: C.muted }}
+                >
+                  {formatLabel(sortKey)}
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Hot Streaks Section ----------
+// Dedicated section showing the current streak + best-ever streak for each
+// player who's played at least one game. Split into two sub-lists: active
+// win streaks (hot) and active loss streaks (cold). Best streak shown as
+// a small subline under the current.
+function HotStreaksSection({ stats }) {
+  const active = stats.filter((s) => s.games > 0);
+  if (active.length === 0) return null;
+
+  // Hot: players with an active win streak (currentStreak > 0), longest first
+  const hot = active
+    .filter((s) => s.currentStreak > 0)
+    .sort((a, b) => b.currentStreak - a.currentStreak);
+  // Cold: active loss streaks (currentStreak < 0), longest first
+  const cold = active
+    .filter((s) => s.currentStreak < 0)
+    .sort((a, b) => a.currentStreak - b.currentStreak); // more negative = longer
+
+  const renderRow = (s) => {
+    const isWin = s.currentStreak > 0;
+    const n = Math.abs(s.currentStreak);
+    const best = isWin ? s.bestWinStreak : s.bestLossStreak;
+    return (
+      <div
+        key={s.id}
+        className="px-4 py-2.5 flex items-center gap-3"
+        style={{ borderTop: `1px solid ${C.line}` }}
+      >
+        <StreakBadge streak={s.currentStreak} />
+        <div className="flex-1 min-w-0">
+          <PlayerName
+            id={s.id}
+            name={s.name}
+            className="font-bold text-[14px] leading-tight truncate block"
+          />
+          <div className="text-[11px]" style={{ color: C.muted }}>
+            Best {isWin ? "win" : "loss"} streak: {best}
+          </div>
+        </div>
+        <div className="text-right">
+          <div
+            className="text-lg leading-none"
+            style={{ fontFamily: DISPLAY, color: isWin ? C.coral : C.muted }}
+          >
+            {n}
+          </div>
+          <div className="text-[9px] uppercase tracking-[0.18em] font-bold" style={{ color: C.muted }}>
+            in a row
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderBlock = (title, icon, iconColor, list, emptyMsg) => (
+    <div
+      className="rounded-sm overflow-hidden"
+      style={{ background: "white", border: `1px solid ${C.line}` }}
+    >
+      <div
+        className="px-4 py-2.5 flex items-center gap-2"
+        style={{ background: C.cream }}
+      >
+        {icon}
+        <span
+          className="text-[11px] uppercase tracking-[0.22em] font-bold"
+          style={{ color: iconColor, fontFamily: BODY }}
+        >
+          {title}
+        </span>
+      </div>
+      {list.length === 0 ? (
+        <div className="text-center py-5 text-xs" style={{ color: C.muted }}>
+          {emptyMsg}
+        </div>
+      ) : (
+        list.map(renderRow)
+      )}
+    </div>
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="text-[10px] uppercase tracking-[0.22em] font-bold px-1" style={{ color: C.muted }}>
+        Streaks
+      </div>
+      {renderBlock(
+        "On Fire",
+        <Flame size={14} color={C.coral} strokeWidth={2.4} />,
+        C.coral,
+        hot,
+        "No active win streaks."
+      )}
+      {renderBlock(
+        "Ice Cold",
+        <Snowflake size={14} color={C.navy} strokeWidth={2.4} />,
+        C.navy,
+        cold,
+        "No active losing streaks."
+      )}
     </div>
   );
 }
@@ -1904,7 +3087,11 @@ function PointsWonBoard({ stats }) {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between mb-1.5">
-                  <div className="font-bold text-[14px] leading-tight truncate">{s.name}</div>
+                  <PlayerName
+                    id={s.id}
+                    name={s.name}
+                    className="font-bold text-[14px] leading-tight truncate block"
+                  />
                   <div className="text-[10px] ml-2 shrink-0" style={{ color: C.muted }}>
                     {s.pointsFor}/{s.pointsPossible} pts
                   </div>
@@ -1944,6 +3131,36 @@ function PointsWonBoard({ stats }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function StreakBadge({ streak }) {
+  // `streak` is signed: positive = win streak, negative = loss streak.
+  // Display format: "W3" / "L2" with an appropriate icon.
+  // Single-game streaks (W1 / L1) are shown too, as requested — "show current streak only".
+  if (streak === 0) return null;
+  const isWin = streak > 0;
+  const n = Math.abs(streak);
+  return (
+    <div
+      className="flex items-center gap-1 px-2 py-1 rounded-sm shrink-0"
+      style={{
+        background: isWin ? C.coral : C.ice,
+        color: isWin ? C.cream : C.navyDeep,
+        fontFamily: DISPLAY,
+      }}
+      aria-label={`${isWin ? "Win" : "Loss"} streak of ${n}`}
+    >
+      {isWin ? (
+        <Flame size={11} strokeWidth={2.6} />
+      ) : (
+        <Snowflake size={11} strokeWidth={2.6} />
+      )}
+      <span className="text-[11px] leading-none">
+        {isWin ? "W" : "L"}
+        {n}
+      </span>
     </div>
   );
 }
