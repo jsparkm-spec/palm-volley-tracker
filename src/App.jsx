@@ -268,6 +268,47 @@ function computePartnerships(players, games) {
   return Object.values(map).map((p) => ({ ...p, winPct: p.games ? p.wins / p.games : 0 }));
 }
 
+// Leaderboard comparator. Every sort key resolves ties with point differential
+// so identical primary values don't reorder randomly run-to-run.
+//   winPct     → ties: diff, then wins
+//   pointsPct  → ties: diff, then pointsFor
+//   wins       → ties: diff, then winPct
+//   games      → ties: diff, then winPct
+//   diff       → ties: wins, then games (diff is the primary, so tiebreakers differ)
+//   ppg        → ties: diff, then games
+function compareBySortKey(sortKey) {
+  return (a, b) => {
+    switch (sortKey) {
+      case "winPct":
+        if (b.winPct !== a.winPct) return b.winPct - a.winPct;
+        if (b.diff !== a.diff) return b.diff - a.diff;
+        return b.wins - a.wins;
+      case "pointsPct":
+        if (b.pointsPct !== a.pointsPct) return b.pointsPct - a.pointsPct;
+        if (b.diff !== a.diff) return b.diff - a.diff;
+        return b.pointsFor - a.pointsFor;
+      case "wins":
+        if (b.wins !== a.wins) return b.wins - a.wins;
+        if (b.diff !== a.diff) return b.diff - a.diff;
+        return b.winPct - a.winPct;
+      case "games":
+        if (b.games !== a.games) return b.games - a.games;
+        if (b.diff !== a.diff) return b.diff - a.diff;
+        return b.winPct - a.winPct;
+      case "diff":
+        if (b.diff !== a.diff) return b.diff - a.diff;
+        if (b.wins !== a.wins) return b.wins - a.wins;
+        return b.games - a.games;
+      case "ppg":
+        if (b.ppg !== a.ppg) return b.ppg - a.ppg;
+        if (b.diff !== a.diff) return b.diff - a.diff;
+        return b.games - a.games;
+      default:
+        return (b[sortKey] ?? 0) - (a[sortKey] ?? 0);
+    }
+  };
+}
+
 // ---------- Root ----------
 export default function App() {
   const [group, setGroup] = useState(null); // { id, name, code }
@@ -2534,17 +2575,7 @@ function StatsView({ stats, partnerships, games, players }) {
 
   const sorted = useMemo(() => {
     const active = stats.filter((s) => s.games >= minGames);
-    return active.slice().sort((a, b) => {
-      if (sortKey === "winPct") {
-        if (b.winPct !== a.winPct) return b.winPct - a.winPct;
-        return b.wins - a.wins;
-      }
-      if (sortKey === "pointsPct") {
-        if (b.pointsPct !== a.pointsPct) return b.pointsPct - a.pointsPct;
-        return b.pointsFor - a.pointsFor;
-      }
-      return (b[sortKey] ?? 0) - (a[sortKey] ?? 0);
-    });
+    return active.slice().sort(compareBySortKey(sortKey));
   }, [stats, sortKey, minGames]);
 
   const totalGames = games.length;
@@ -2823,17 +2854,7 @@ function DailyLeaderboard({ games, players }) {
 
   const sorted = useMemo(() => {
     const active = dayStats.filter((s) => s.games > 0);
-    return active.slice().sort((a, b) => {
-      if (sortKey === "winPct") {
-        if (b.winPct !== a.winPct) return b.winPct - a.winPct;
-        return b.wins - a.wins;
-      }
-      if (sortKey === "pointsPct") {
-        if (b.pointsPct !== a.pointsPct) return b.pointsPct - a.pointsPct;
-        return b.pointsFor - a.pointsFor;
-      }
-      return (b[sortKey] ?? 0) - (a[sortKey] ?? 0);
-    });
+    return active.slice().sort(compareBySortKey(sortKey));
   }, [dayStats, sortKey]);
 
   // Dates that actually have games — used to pre-validate the date picker
