@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/i/:token",
+      "destination": "/"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/"
+    }
+  ]
+}

@@ -30,7 +30,7 @@ const C = {
 const DISPLAY = "'Russo One', 'Archivo Black', sans-serif";
 const BODY = "'Lato', -apple-system, sans-serif";
 
-export default function AuthGate({ onUseInviteCode }) {
+export default function AuthGate() {
   const [mode, setMode] = useState("login"); // 'login' | 'signup' | 'check-email'
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
@@ -403,22 +403,20 @@ export default function AuthGate({ onUseInviteCode }) {
               )}
             </div>
 
-            {/* Backwards-compat escape hatch — invite code path.
-                Removed in Step 5 once invite links ship. */}
-            {onUseInviteCode && (
-              <div
-                className="mt-8 pt-5 text-center"
-                style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}
+            {/* Bottom-of-screen helper for users who arrived without an
+                account but were sent an invite link from a friend. */}
+            <div
+              className="mt-8 pt-5 text-center"
+              style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}
+            >
+              <p
+                className="text-[11px]"
+                style={{ color: "rgba(246,249,251,0.45)", lineHeight: 1.5 }}
               >
-                <button
-                  onClick={onUseInviteCode}
-                  className="text-[11px] uppercase tracking-[0.22em] font-bold"
-                  style={{ color: "rgba(246,249,251,0.45)" }}
-                >
-                  I have an invite code instead →
-                </button>
-              </div>
-            )}
+                New here? Ask a group owner for an invite link
+                — once you sign up, the link auto-joins you.
+              </p>
+            </div>
           </>
         )}
       </div>

@@ -176,6 +176,18 @@ const authApi = {
     }),
   deleteGame: (groupId, gameId) =>
     authRpc("tracker_delete_game_v2", { p_group_id: groupId, p_game_id: gameId }),
+
+  // ---- Step 5: invite links ----
+  createInvite: (groupId) =>
+    authRpc("tracker_create_invite", { p_group_id: groupId }),
+  redeemInvite: (token) =>
+    authRpc("tracker_redeem_invite", { p_token: token }),
+  resolveInvite: (token) =>
+    authRpc("tracker_resolve_invite", { p_token: token }),
+  revokeInvite: (inviteId) =>
+    authRpc("tracker_revoke_invite", { p_invite_id: inviteId }),
+  activeInvite: (groupId) =>
+    authRpc("tracker_active_invite", { p_group_id: groupId }),
 };
 
 // ---------- Helpers ----------
@@ -218,6 +230,48 @@ async function clearGroupFromStorage() {
   try {
     localStorage.removeItem(GROUP_STORAGE_KEY);
   } catch (e) {}
+}
+
+// ---- Invite link helpers ----
+// URL pattern: tracker.palmvolley.com/i/AB12CD
+// Token gets stored locally so it survives the auth round-trip (sign in → email
+// confirmation → redirect back). On the next mount when the user is signed in,
+// we redeem the stored token automatically.
+const INVITE_TOKEN_KEY = "tracker:pendingInvite:v1";
+
+function readInviteTokenFromUrl() {
+  if (typeof window === "undefined") return null;
+  const m = window.location.pathname.match(/^\/i\/([A-Z0-9]{4,12})$/i);
+  return m ? m[1].toUpperCase() : null;
+}
+
+function stashInviteToken(token) {
+  try {
+    localStorage.setItem(INVITE_TOKEN_KEY, token);
+  } catch (e) {}
+}
+
+function readStashedInviteToken() {
+  try {
+    return localStorage.getItem(INVITE_TOKEN_KEY);
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearStashedInviteToken() {
+  try {
+    localStorage.removeItem(INVITE_TOKEN_KEY);
+  } catch (e) {}
+}
+
+// Strip the /i/{token} from the address bar after redemption (avoids
+// re-redeeming on reload + cleans up the URL).
+function clearInviteUrl() {
+  if (typeof window === "undefined") return;
+  if (window.location.pathname.startsWith("/i/")) {
+    window.history.replaceState(null, "", "/");
+  }
 }
 
 // ---------- Stats ----------
@@ -366,7 +420,7 @@ function compareBySortKey(sortKey) {
 
 // ---------- Root ----------
 export default function App() {
-  // ---- Group state (legacy invite-code flow) ----
+  // Group state. Used to remember the chosen group across reloads.
   const [group, setGroup] = useState(null); // { id, name, code }
   const [bootstrapped, setBootstrapped] = useState(false);
 
@@ -375,10 +429,22 @@ export default function App() {
   const [session, setSession] = useState(undefined);
   // memberships: undefined = loading, [] = none, [{...}] = list
   const [memberships, setMemberships] = useState(undefined);
-  const [inviteCodeMode, setInviteCodeMode] = useState(false);
+
+  // ---- Invite link state ----
+  // The token currently being processed (either fresh from URL on this load,
+  // or stashed from a prior load that bounced through auth). Null if none.
+  const [pendingInviteToken, setPendingInviteToken] = useState(null);
+  // Set after we successfully redeem so the success ribbon can show one tick
+  // and we don't try to redeem twice.
+  const [redeemedToken, setRedeemedToken] = useState(null);
+  // Becomes the {id, name} of the resolved group after redemption — used to
+  // route the user straight into that group on next render.
+  const [redeemedGroup, setRedeemedGroup] = useState(null);
+  // Error from a failed redeem, surfaced on the invite landing screen.
+  const [inviteError, setInviteError] = useState(null);
 
   // refreshMemberships re-queries the user's group memberships. Called after
-  // claim/join actions and on auth state changes.
+  // claim/join/redeem actions and on auth state changes.
   const refreshMemberships = useCallback(async () => {
     try {
       const data = await authApi.myGroups();
@@ -391,6 +457,22 @@ export default function App() {
     }
   }, []);
 
+  // ---- Bootstrap: read invite token from URL once on mount ----
+  // If the URL is /i/{TOKEN}, capture it, stash to localStorage so it survives
+  // the auth round-trip, and clean the URL so reload doesn't re-trigger.
+  useEffect(() => {
+    const fromUrl = readInviteTokenFromUrl();
+    const stashed = readStashedInviteToken();
+    const token = fromUrl || stashed;
+    if (token) {
+      setPendingInviteToken(token);
+      if (fromUrl) {
+        stashInviteToken(fromUrl);
+        clearInviteUrl();
+      }
+    }
+  }, []);
+
   // ---- Auth session lifecycle ----
   useEffect(() => {
     let unsub = null;
@@ -399,8 +481,6 @@ export default function App() {
       setSession(data.session ?? null);
       const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
         setSession(newSession ?? null);
-        // Reset memberships on session change so they get re-fetched for the
-        // new user (or cleared on sign-out).
         setMemberships(newSession ? undefined : []);
       });
       unsub = sub?.subscription;
@@ -411,9 +491,6 @@ export default function App() {
   }, []);
 
   // ---- Memberships fetch on session ----
-  // Whenever the user becomes signed in, fetch their memberships so we can
-  // route to TrackerApp (active member) vs claim flow (no membership) vs
-  // pending screen (only pending memberships).
   useEffect(() => {
     if (session) {
       refreshMemberships();
@@ -422,96 +499,100 @@ export default function App() {
     }
   }, [session, refreshMemberships]);
 
-  // ---- Group restoration (legacy invite-code path) ----
-  // Only used by the invite-code escape hatch. Once a session-based user has
-  // an active membership, this state is bypassed entirely.
+  // ---- Auto-redeem: when signed-in user has a pending token, redeem it ----
+  // Runs once memberships have loaded for the current session, so we know
+  // whether the user is already a member of the invited group.
+  useEffect(() => {
+    if (!session || !pendingInviteToken || memberships === undefined) return;
+    if (redeemedToken === pendingInviteToken) return; // already redeemed
+    (async () => {
+      try {
+        const groupRow = await authApi.redeemInvite(pendingInviteToken);
+        const g = {
+          id: groupRow.id,
+          name: groupRow.name,
+          code: groupRow.invite_code,
+        };
+        setRedeemedGroup(g);
+        setRedeemedToken(pendingInviteToken);
+        await saveGroupToStorage(g);
+        clearStashedInviteToken();
+        await refreshMemberships();
+      } catch (e) {
+        setInviteError(e.message || "Couldn't accept this invite link.");
+        clearStashedInviteToken();
+        setPendingInviteToken(null);
+      }
+    })();
+  }, [session, pendingInviteToken, memberships, redeemedToken, refreshMemberships]);
+
+  // ---- Group restoration from localStorage ----
+  // Just remembers the user's last viewed group across reloads. Membership
+  // truth comes from the server.
   useEffect(() => {
     (async () => {
       const saved = await loadGroupFromStorage();
-      if (saved?.code) {
-        try {
-          const rows = await api.joinGroup(saved.code);
-          if (rows && rows.length > 0) {
-            const g = { id: rows[0].id, name: rows[0].name, code: rows[0].invite_code };
-            setGroup(g);
-            await saveGroupToStorage(g);
-          } else {
-            await clearGroupFromStorage();
-          }
-        } catch (e) {
-          setGroup(saved);
-        }
-      }
+      if (saved?.id) setGroup(saved);
       setBootstrapped(true);
     })();
   }, []);
 
-  // ---- Routing logic ----
+  // ---- Routing ----
 
-  // Wait for both auth + group restoration to settle.
+  // Wait for auth + bootstrap to settle.
   if (!bootstrapped || session === undefined) {
     return <Splash message="Warming up the court…" />;
   }
 
-  // Unauthenticated and not bypassing → AuthGate.
-  if (!session && !inviteCodeMode) {
-    return <AuthGate onUseInviteCode={() => setInviteCodeMode(true)} />;
-  }
-
-  // Invite-code path bypasses memberships entirely.
-  if (!session && inviteCodeMode) {
-    if (!group) {
-      return (
-        <GroupGate
-          onReady={async (g) => {
-            setGroup(g);
-            await saveGroupToStorage(g);
-          }}
-        />
-      );
-    }
+  // Signed-out user arrived via /i/{token} → show invite landing.
+  if (!session && pendingInviteToken) {
     return (
-      <TrackerApp
-        group={group}
-        session={null}
-        onLeaveGroup={async () => {
-          await clearGroupFromStorage();
-          setGroup(null);
+      <InviteLanding
+        token={pendingInviteToken}
+        error={inviteError}
+        onSignIn={() => setInviteError(null)}
+        onCancel={() => {
+          clearStashedInviteToken();
+          setPendingInviteToken(null);
+          setInviteError(null);
         }}
-        onSignOut={async () => {
-          await clearGroupFromStorage();
-          setGroup(null);
-          setInviteCodeMode(false);
-          await supabase.auth.signOut();
-        }}
-        onMembershipsChanged={refreshMemberships}
       />
     );
   }
 
-  // Authenticated path: wait for memberships to load.
+  // Signed-out user, no invite → AuthGate (no escape hatch anymore).
+  if (!session) {
+    return <AuthGate />;
+  }
+
+  // Signed in: wait for memberships to load before deciding where to route.
   if (memberships === undefined) {
     return <Splash message="Loading your groups…" />;
   }
 
-  // Active memberships exist → drop into the tracker. Pick the most recent
-  // active group as the default. Pending-only memberships fall through to
-  // the join-pending screen.
+  // If there's a pending token still being redeemed, hold here.
+  if (pendingInviteToken && !redeemedToken && !inviteError) {
+    return <Splash message="Accepting your invite…" />;
+  }
+
   const activeMemberships = memberships.filter((m) => m.status === "active");
   const pendingMemberships = memberships.filter((m) => m.status === "pending");
 
+  // Active memberships → tracker. Prefer redeemed group, then saved, then most recent.
   if (activeMemberships.length > 0) {
-    // Use saved group if it's in the active list, otherwise the most recent.
-    const saved = group;
-    const matched =
-      saved && activeMemberships.find((m) => m.group_id === saved.id);
-    const chosen = matched
-      ? saved
-      : {
-          id: activeMemberships[0].group_id,
-          name: activeMemberships[0].name,
-          code: activeMemberships[0].invite_code,
-        };
+    const fromRedeem =
+      redeemedGroup &&
+      activeMemberships.find((m) => m.group_id === redeemedGroup.id) &&
+      redeemedGroup;
+    const fromSaved =
+      group && activeMemberships.find((m) => m.group_id === group.id) && group;
+    const chosen =
+      fromRedeem ||
+      fromSaved || {
+        id: activeMemberships[0].group_id,
+        name: activeMemberships[0].name,
+        code: activeMemberships[0].invite_code,
+      };
     return (
       <TrackerApp
         group={chosen}
@@ -525,8 +606,10 @@ export default function App() {
         onSignOut={async () => {
           await clearGroupFromStorage();
           setGroup(null);
-          setInviteCodeMode(false);
           setMemberships(undefined);
+          setRedeemedGroup(null);
+          setRedeemedToken(null);
+          setPendingInviteToken(null);
           await supabase.auth.signOut();
         }}
         onMembershipsChanged={refreshMemberships}
@@ -534,7 +617,7 @@ export default function App() {
     );
   }
 
-  // Only pending memberships? Show waiting screen.
+  // Only pending memberships → waiting screen.
   if (pendingMemberships.length > 0) {
     return (
       <JoinPendingScreen
@@ -548,7 +631,7 @@ export default function App() {
     );
   }
 
-  // No memberships at all → claim/join flow.
+  // Signed in, no memberships, no pending invite → claim/join flow.
   return (
     <ClaimOrJoinFlow
       session={session}
@@ -578,6 +661,125 @@ function Splash({ message }) {
   );
 }
 
+// ---------- Invite Landing ----------
+// Shown to a signed-out user who arrived at /i/{TOKEN}. Tells them what they're
+// being invited to and routes them into the AuthGate to sign in / sign up. The
+// token has already been stashed in localStorage; once they sign in, the App
+// root effect auto-redeems it and routes them into the group.
+function InviteLanding({ token, error, onSignIn, onCancel }) {
+  const [showAuth, setShowAuth] = useState(false);
+
+  if (showAuth) {
+    return <AuthGate />;
+  }
+
+  return (
+    <div
+      className="min-h-screen flex flex-col"
+      style={{
+        background: `linear-gradient(160deg, ${C.navy} 0%, ${C.navyDeep} 60%, ${C.ink} 100%)`,
+        color: C.cream,
+        fontFamily: BODY,
+        paddingTop: "max(2rem, calc(env(safe-area-inset-top) + 1rem))",
+        paddingBottom: "max(2rem, calc(env(safe-area-inset-bottom) + 1rem))",
+      }}
+    >
+      <div className="flex-1 flex flex-col justify-center px-6 py-8 max-w-md w-full mx-auto">
+        <div className="flex items-center gap-3 mb-10">
+          <Logomark variant="light" className="w-12 h-12 shrink-0" />
+          <div>
+            <div
+              className="text-[10px] uppercase tracking-[0.28em] font-bold"
+              style={{ color: C.sky }}
+            >
+              Palm Volley Pickle
+            </div>
+            <div
+              className="text-2xl uppercase leading-none"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+            >
+              Court Report
+            </div>
+          </div>
+        </div>
+
+        <div
+          className="w-12 h-12 rounded-sm flex items-center justify-center mb-5"
+          style={{ background: "rgba(96,192,226,0.18)" }}
+        >
+          <KeyRound size={22} color={C.sky} />
+        </div>
+        <h1
+          className="text-3xl uppercase leading-[1.05] mb-2"
+          style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+        >
+          You've been invited
+        </h1>
+        <p className="text-sm mb-8" style={{ color: "rgba(246,249,251,0.7)" }}>
+          Sign in or create an account to join the group. The invite is saved —
+          we'll add you automatically once you're in.
+        </p>
+
+        {error && (
+          <div
+            className="mb-5 px-3 py-2.5 rounded-sm text-xs"
+            style={{
+              background: "rgba(234,78,51,0.15)",
+              color: "#ffd9d2",
+              border: `1px solid ${C.coral}`,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <div
+          className="px-4 py-3 rounded-sm mb-6 flex items-center gap-3"
+          style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)" }}
+        >
+          <span
+            className="text-[10px] uppercase tracking-[0.22em] font-bold shrink-0"
+            style={{ color: "rgba(246,249,251,0.55)" }}
+          >
+            Code
+          </span>
+          <span
+            className="font-bold"
+            style={{ fontFamily: DISPLAY, fontSize: "16px", letterSpacing: "0.18em" }}
+          >
+            {token}
+          </span>
+        </div>
+
+        <button
+          onClick={() => {
+            onSignIn?.();
+            setShowAuth(true);
+          }}
+          className="w-full py-3.5 rounded-sm uppercase tracking-[0.18em] flex items-center justify-center gap-2"
+          style={{
+            background: C.coral,
+            color: C.cream,
+            fontFamily: DISPLAY,
+            fontSize: "14px",
+            boxShadow: "0 8px 20px -6px rgba(234,78,51,0.35)",
+          }}
+        >
+          Sign in to accept <ArrowRight size={14} />
+        </button>
+
+        <button
+          onClick={onCancel}
+          className="w-full mt-3 py-2 text-[11px] uppercase tracking-[0.22em] font-bold"
+          style={{ color: "rgba(246,249,251,0.45)" }}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Claim / Join Flow ----------
 //
 // State machine for a signed-in user with no active memberships:
@@ -593,6 +795,7 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
   const [step, setStep] = useState("start");
   const [code, setCode] = useState("");
   const [groupCtx, setGroupCtx] = useState(null); // { id, name, code }
+  const [resolvedToken, setResolvedToken] = useState(null); // invite token for groupCtx
   const [unclaimed, setUnclaimed] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
@@ -603,15 +806,23 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
     setErr(null);
     setBusy(true);
     try {
-      // Use the legacy join-by-code RPC to find the group. It returns the
-      // group row if the code is valid; we use that to learn the group's id.
-      const rows = await api.joinGroup(code.trim());
-      if (!rows?.length) {
-        setErr("No group with that code.");
+      const raw = code.trim();
+      const tokenMatch = raw.match(/(?:\/i\/)?([A-Z0-9]{4,12})\s*$/i);
+      if (!tokenMatch) {
+        setErr("That doesn't look like a valid invite link.");
         return;
       }
-      const g = { id: rows[0].id, name: rows[0].name, code: rows[0].invite_code };
+      const token = tokenMatch[1].toUpperCase();
+      // resolveInvite is read-only and just returns the group.
+      const groupRow = await authApi.resolveInvite(token);
+      const g = {
+        id: groupRow.id,
+        name: groupRow.name,
+        code: groupRow.invite_code,
+      };
       setGroupCtx(g);
+      // Stash the resolved token so claim/create handlers can redeem it.
+      setResolvedToken(token);
       if (intent === "claim") {
         const players = await authApi.unclaimedPlayersInGroup(g.id);
         setUnclaimed(players || []);
@@ -630,8 +841,12 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
     setErr(null);
     setBusy(true);
     try {
+      // Redeem the invite first to establish membership, then claim the player.
+      // Both are idempotent on Supabase side, so retries are safe.
+      if (resolvedToken) {
+        await authApi.redeemInvite(resolvedToken);
+      }
       await authApi.claimPlayer(playerId, groupCtx.id);
-      // Save the chosen group to localStorage so TrackerApp picks it up.
       await saveGroupToStorage(groupCtx);
       setStep("success");
       setTimeout(() => onComplete(), 800);
@@ -650,6 +865,11 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
     }
     setBusy(true);
     try {
+      // Redeem the invite first so the user is a member of the group, then
+      // create their player record on that roster.
+      if (resolvedToken) {
+        await authApi.redeemInvite(resolvedToken);
+      }
       await authApi.createPlayerForSelf(displayName.trim(), groupCtx.id);
       await saveGroupToStorage(groupCtx);
       setStep("success");
@@ -716,7 +936,7 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
             <ChoiceButton
               icon={<KeyRound size={18} />}
               title="I'm new to a group"
-              subtitle="Join a group with an invite code"
+              subtitle="Join a group with an invite link"
               onClick={() => {
                 setIntent("create");
                 setStep("enter-code");
@@ -855,27 +1075,28 @@ function CodeEntryStep({ code, setCode, busy, err, onSubmit, onBack }) {
         ← Back
       </button>
       <h2 className="text-2xl mb-2 uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
-        Enter group code
+        Paste your invite
       </h2>
       <p className="text-sm mb-6" style={{ color: "rgba(246,249,251,0.7)" }}>
-        Ask your group's owner for the 6-character invite code.
+        Paste the invite link the group owner sent you, or just the
+        6-character code at the end.
       </p>
       <input
         ref={inputRef}
         type="text"
         value={code}
-        maxLength={8}
-        onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+        maxLength={120}
+        onChange={(e) => setCode(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && code.trim() && onSubmit()}
-        placeholder="ABC123"
-        className="w-full px-4 py-4 rounded-sm text-center outline-none"
+        placeholder="palmvolley.com/i/AB12CD"
+        className="w-full px-4 py-4 rounded-sm outline-none"
         style={{
           background: "rgba(255,255,255,0.08)",
           border: "1px solid rgba(255,255,255,0.18)",
           color: C.cream,
-          fontFamily: DISPLAY,
-          fontSize: "28px",
-          letterSpacing: "0.3em",
+          fontFamily: BODY,
+          fontWeight: 600,
+          fontSize: "16px",
         }}
       />
       {err && (
@@ -1747,57 +1968,104 @@ function Header({ group, online, syncing, onRefresh, onOpenSettings }) {
 
 // ---------- Group Modal ----------
 function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, onMembershipsChanged }) {
-  const [copied, setCopied] = useState(false);
-
   // Owner detection: check this user's membership in this specific group.
   const myMembership = (memberships || []).find((m) => m.group_id === group.id);
   const isOwner = myMembership?.role === "owner";
 
-  // Owner-only state: pending members + claim window status.
+  // Owner-only state: pending members + claim window status + invite link.
   const [pending, setPending] = useState([]);
   const [claimOpen, setClaimOpen] = useState(myMembership?.claim_window_open ?? true);
   const [adminBusy, setAdminBusy] = useState(false);
   const [adminMsg, setAdminMsg] = useState(null);
+  const [activeInvite, setActiveInvite] = useState(null); // { id, short_token, ... } | null
+  const [inviteCopied, setInviteCopied] = useState(false);
+  const [inviteBusy, setInviteBusy] = useState(false);
+
+  // Derived invite URL (full URL the user shares with friends).
+  const inviteUrl = activeInvite?.short_token
+    ? `${window.location.origin}/i/${activeInvite.short_token}`
+    : null;
 
   // Sync local claimOpen state if the membership data refreshes.
   useEffect(() => {
     if (myMembership) setClaimOpen(myMembership.claim_window_open);
   }, [myMembership?.claim_window_open]);
 
-  // Owners only: load pending members on open.
+  // Owners only: load pending members + active invite on open.
   useEffect(() => {
     if (!isOwner) return;
     (async () => {
       try {
-        const rows = await authApi.pendingMembers(group.id);
-        setPending(rows || []);
+        const [pendingRows, invite] = await Promise.all([
+          authApi.pendingMembers(group.id),
+          authApi.activeInvite(group.id),
+        ]);
+        setPending(pendingRows || []);
+        setActiveInvite(invite || null);
       } catch (e) {
-        console.error("Failed to load pending members", e);
+        console.error("Failed to load owner data", e);
       }
     })();
   }, [isOwner, group.id]);
 
-  const copy = async () => {
+  const copyInvite = async () => {
+    if (!inviteUrl) return;
     try {
-      await navigator.clipboard.writeText(group.code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
+      await navigator.clipboard.writeText(inviteUrl);
+      setInviteCopied(true);
+      setTimeout(() => setInviteCopied(false), 1600);
     } catch (e) {}
   };
-  const share = async () => {
-    const text = `Join our pickleball group "${group.name}" with code: ${group.code}`;
+  const shareInvite = async () => {
+    if (!inviteUrl) return;
+    const text = `Join our pickleball group "${group.name}": ${inviteUrl}`;
     if (navigator.share) {
       try {
         await navigator.share({ title: "Pickleball invite", text });
       } catch (e) {}
     } else {
-      copy();
+      copyInvite();
     }
   };
+  const generateInvite = async () => {
+    setInviteBusy(true);
+    setAdminMsg(null);
+    try {
+      const inv = await authApi.createInvite(group.id);
+      setActiveInvite(inv);
+      setAdminMsg(
+        activeInvite
+          ? "New invite link generated. The old link no longer works."
+          : "Invite link generated."
+      );
+    } catch (e) {
+      setAdminMsg(e.message || "Couldn't generate invite link.");
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+  const revokeInvite = async () => {
+    if (!activeInvite) return;
+    if (!window.confirm("Revoke this invite link? Anyone holding the link won't be able to use it.")) {
+      return;
+    }
+    setInviteBusy(true);
+    setAdminMsg(null);
+    try {
+      await authApi.revokeInvite(activeInvite.id);
+      setActiveInvite(null);
+      setAdminMsg("Invite link revoked.");
+    } catch (e) {
+      setAdminMsg(e.message || "Couldn't revoke invite link.");
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+
   const leave = () => {
     if (
       window.confirm(
-        `Leave "${group.name}"? You can rejoin anytime with the code ${group.code}. Group data stays intact for everyone else.`
+        `Leave "${group.name}"? You'll need a new invite link to rejoin. Group data stays intact for everyone else.`
       )
     ) {
       onLeave();
@@ -1888,53 +2156,93 @@ function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, 
           {group.name}
         </div>
 
-        <div
-          className="rounded-sm p-4 mb-4"
-          style={{
-            background: `linear-gradient(135deg, ${C.ice} 0%, ${C.cream} 100%)`,
-            border: `1px solid ${C.line}`,
-          }}
-        >
+        {/* Invite link card — owner-only. Generates and shows the group's
+            primary invite URL for sharing. */}
+        {isOwner && (
           <div
-            className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2"
-            style={{ color: C.navy }}
-          >
-            Invite Code
-          </div>
-          <div
-            className="text-center py-1"
+            className="rounded-sm p-4 mb-4"
             style={{
-              fontFamily: DISPLAY,
-              fontSize: "34px",
-              letterSpacing: "0.25em",
-              color: C.navyDeep,
+              background: `linear-gradient(135deg, ${C.ice} 0%, ${C.cream} 100%)`,
+              border: `1px solid ${C.line}`,
             }}
           >
-            {group.code}
-          </div>
-          <div className="grid grid-cols-2 gap-2 mt-3">
-            <button
-              onClick={copy}
-              className="py-2.5 rounded-sm flex items-center justify-center gap-1.5 text-sm font-bold"
-              style={{ background: "white", color: C.ink, border: `1px solid ${C.line}` }}
+            <div
+              className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2"
+              style={{ color: C.navy }}
             >
-              {copied ? <Check size={14} /> : <Copy size={14} />}
-              {copied ? "Copied" : "Copy"}
-            </button>
-            <button
-              onClick={share}
-              className="py-2.5 rounded-sm flex items-center justify-center gap-1.5 text-sm font-bold"
-              style={{ background: C.ink, color: C.cream }}
-            >
-              Share
-            </button>
+              Invite Link
+            </div>
+            {inviteUrl ? (
+              <>
+                <div
+                  className="text-center py-1 truncate"
+                  style={{
+                    fontFamily: BODY,
+                    fontWeight: 700,
+                    fontSize: "16px",
+                    color: C.navyDeep,
+                  }}
+                  title={inviteUrl}
+                >
+                  {inviteUrl.replace(/^https?:\/\//, "")}
+                </div>
+                <div className="grid grid-cols-2 gap-2 mt-3">
+                  <button
+                    onClick={copyInvite}
+                    className="py-2.5 rounded-sm flex items-center justify-center gap-1.5 text-sm font-bold"
+                    style={{ background: "white", color: C.ink, border: `1px solid ${C.line}` }}
+                  >
+                    {inviteCopied ? <Check size={14} /> : <Copy size={14} />}
+                    {inviteCopied ? "Copied" : "Copy"}
+                  </button>
+                  <button
+                    onClick={shareInvite}
+                    className="py-2.5 rounded-sm flex items-center justify-center gap-1.5 text-sm font-bold"
+                    style={{ background: C.ink, color: C.cream }}
+                  >
+                    Share
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <button
+                    onClick={generateInvite}
+                    disabled={inviteBusy}
+                    className="py-2 rounded-sm text-[11px] uppercase tracking-[0.18em] font-bold disabled:opacity-50"
+                    style={{ background: "white", color: C.muted, border: `1px solid ${C.line}` }}
+                  >
+                    Regenerate
+                  </button>
+                  <button
+                    onClick={revokeInvite}
+                    disabled={inviteBusy}
+                    className="py-2 rounded-sm text-[11px] uppercase tracking-[0.18em] font-bold disabled:opacity-50"
+                    style={{ background: "white", color: C.coralDeep, border: `1px solid ${C.line}` }}
+                  >
+                    Revoke
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div
+                  className="text-xs mb-3"
+                  style={{ color: C.muted, lineHeight: 1.4 }}
+                >
+                  No active link. Generate one to invite friends — they'll be
+                  added to the group automatically when they tap it.
+                </div>
+                <button
+                  onClick={generateInvite}
+                  disabled={inviteBusy}
+                  className="w-full py-2.5 rounded-sm text-sm font-bold disabled:opacity-50"
+                  style={{ background: C.coral, color: C.cream }}
+                >
+                  {inviteBusy ? "Generating…" : "Generate invite link"}
+                </button>
+              </>
+            )}
           </div>
-        </div>
-
-        <p className="text-xs mb-5 px-1" style={{ color: C.muted, lineHeight: 1.5 }}>
-          Anyone with this code can log games and delete anything in the group. Share it only with people
-          you trust.
-        </p>
+        )}
 
         {/* Owner-only admin controls */}
         {isOwner && (
