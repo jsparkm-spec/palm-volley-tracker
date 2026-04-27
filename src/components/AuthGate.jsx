@@ -30,8 +30,10 @@ const C = {
 const DISPLAY = "'Russo One', 'Archivo Black', sans-serif";
 const BODY = "'Lato', -apple-system, sans-serif";
 
-export default function AuthGate() {
-  const [mode, setMode] = useState("login"); // 'login' | 'signup' | 'check-email'
+export default function AuthGate({ invitedTo = null }) {
+  // Mode flow: welcome (default) → login | signup → check-email after signup.
+  // 'welcome' is the entry-point Sign In / Create Account choice screen.
+  const [mode, setMode] = useState("welcome");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [info, setInfo] = useState(null); // success/info banner (e.g. "magic link sent")
@@ -227,8 +229,23 @@ export default function AuthGate() {
 
         {mode === "check-email" ? (
           <CheckEmailScreen email={email} onBack={() => switchMode("login")} />
+        ) : mode === "welcome" ? (
+          <WelcomeScreen
+            invitedTo={invitedTo}
+            onSignIn={() => switchMode("login")}
+            onSignUp={() => switchMode("signup")}
+          />
         ) : (
           <>
+            {/* Back to choice screen — only meaningful before user has typed
+                anything substantial; harmless to always show. */}
+            <button
+              onClick={() => switchMode("welcome")}
+              className="text-[11px] uppercase tracking-[0.22em] font-bold mb-4 opacity-70 inline-flex items-center gap-1"
+              style={{ color: "rgba(246,249,251,0.6)" }}
+            >
+              ← Back
+            </button>
             <h1
               className="text-3xl uppercase leading-[1.05] mb-1"
               style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
@@ -354,24 +371,6 @@ export default function AuthGate() {
 
             {/* Tertiary links */}
             <div className="mt-5 flex flex-col items-center gap-2.5">
-              {mode === "login" ? (
-                <button
-                  onClick={() => switchMode("signup")}
-                  className="text-sm font-bold underline decoration-dotted underline-offset-4"
-                  style={{ color: C.sky }}
-                >
-                  Create account →
-                </button>
-              ) : (
-                <button
-                  onClick={() => switchMode("login")}
-                  className="text-sm font-bold underline decoration-dotted underline-offset-4"
-                  style={{ color: C.sky }}
-                >
-                  ← Back to sign in
-                </button>
-              )}
-
               <button
                 onClick={handleMagicLink}
                 disabled={busy}
@@ -402,21 +401,6 @@ export default function AuthGate() {
                 </>
               )}
             </div>
-
-            {/* Bottom-of-screen helper for users who arrived without an
-                account but were sent an invite link from a friend. */}
-            <div
-              className="mt-8 pt-5 text-center"
-              style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}
-            >
-              <p
-                className="text-[11px]"
-                style={{ color: "rgba(246,249,251,0.45)", lineHeight: 1.5 }}
-              >
-                New here? Ask a group owner for an invite link
-                — once you sign up, the link auto-joins you.
-              </p>
-            </div>
           </>
         )}
       </div>
@@ -425,6 +409,94 @@ export default function AuthGate() {
 }
 
 // ---------- Sub-components ----------
+
+// Welcome / "Are you new or returning?" choice screen. Shown by default before
+// the user picks Sign In or Create Account. Includes an optional invite banner
+// when the user arrived via an invite link.
+function WelcomeScreen({ invitedTo, onSignIn, onSignUp }) {
+  return (
+    <>
+      {invitedTo && (
+        <div
+          className="mb-6 px-3 py-3 rounded-sm flex items-center gap-3"
+          style={{
+            background: "rgba(96,192,226,0.12)",
+            border: `1px solid ${C.sky}`,
+          }}
+        >
+          <Sparkles size={16} color={C.sky} />
+          <div className="flex-1 min-w-0">
+            <div
+              className="text-[10px] uppercase tracking-[0.22em] font-bold"
+              style={{ color: C.sky }}
+            >
+              You've been invited
+            </div>
+            <div className="text-xs mt-0.5" style={{ color: "rgba(246,249,251,0.85)" }}>
+              Code: <strong style={{ fontFamily: DISPLAY, letterSpacing: "0.12em" }}>{invitedTo}</strong>
+              {" — "}we'll add you to the group automatically.
+            </div>
+          </div>
+        </div>
+      )}
+
+      <h1
+        className="text-3xl uppercase leading-[1.05] mb-2"
+        style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+      >
+        {invitedTo ? "Get started" : "Welcome to Palm Volley"}
+      </h1>
+      <p className="text-sm mb-8" style={{ color: "rgba(246,249,251,0.7)" }}>
+        Track your pickleball games, see your stats, and settle who's actually
+        the best on the court.
+      </p>
+
+      {/* Primary action: Create Account (the more frequent path for new users). */}
+      <button
+        onClick={onSignUp}
+        className="w-full py-3.5 rounded-sm uppercase tracking-[0.18em] flex items-center justify-center gap-2 transition-all active:scale-[0.99]"
+        style={{
+          background: C.coral,
+          color: C.cream,
+          fontFamily: DISPLAY,
+          fontSize: "14px",
+          boxShadow: "0 8px 20px -6px rgba(234,78,51,0.35)",
+        }}
+      >
+        Create Account <ArrowRight size={14} />
+      </button>
+
+      {/* Secondary: Sign In for returning users. Outlined so it reads as
+          a clear-but-quieter alternative. */}
+      <button
+        onClick={onSignIn}
+        className="w-full mt-3 py-3.5 rounded-sm uppercase tracking-[0.18em] flex items-center justify-center gap-2 transition-all active:scale-[0.99]"
+        style={{
+          background: "transparent",
+          color: C.cream,
+          fontFamily: DISPLAY,
+          fontSize: "14px",
+          border: "1px solid rgba(246,249,251,0.35)",
+        }}
+      >
+        Sign In
+      </button>
+
+      {/* Tertiary helper line. Tells users that Google works either way so
+          they don't worry they have to make a "wrong" choice between
+          Sign In and Create Account if they sign in with Google. */}
+      <div className="mt-6 flex items-center justify-center gap-2">
+        <GoogleG size={14} />
+        <p
+          className="text-[11px]"
+          style={{ color: "rgba(246,249,251,0.55)" }}
+        >
+          Sign in with Google works for both
+        </p>
+      </div>
+    </>
+  );
+}
 
 function Field({
   label,

@@ -544,25 +544,12 @@ export default function App() {
     return <Splash message="Warming up the court…" />;
   }
 
-  // Signed-out user arrived via /i/{token} → show invite landing.
-  if (!session && pendingInviteToken) {
-    return (
-      <InviteLanding
-        token={pendingInviteToken}
-        error={inviteError}
-        onSignIn={() => setInviteError(null)}
-        onCancel={() => {
-          clearStashedInviteToken();
-          setPendingInviteToken(null);
-          setInviteError(null);
-        }}
-      />
-    );
-  }
-
-  // Signed-out user, no invite → AuthGate (no escape hatch anymore).
+  // Signed-out user → AuthGate. Pass the invite token (if present) so the
+  // welcome screen can show "you've been invited" context. The token has
+  // already been stashed to localStorage; once they sign in, the
+  // auto-redeem effect picks it up.
   if (!session) {
-    return <AuthGate />;
+    return <AuthGate invitedTo={pendingInviteToken || null} />;
   }
 
   // Signed in: wait for memberships to load before deciding where to route.
@@ -661,124 +648,6 @@ function Splash({ message }) {
   );
 }
 
-// ---------- Invite Landing ----------
-// Shown to a signed-out user who arrived at /i/{TOKEN}. Tells them what they're
-// being invited to and routes them into the AuthGate to sign in / sign up. The
-// token has already been stashed in localStorage; once they sign in, the App
-// root effect auto-redeems it and routes them into the group.
-function InviteLanding({ token, error, onSignIn, onCancel }) {
-  const [showAuth, setShowAuth] = useState(false);
-
-  if (showAuth) {
-    return <AuthGate />;
-  }
-
-  return (
-    <div
-      className="min-h-screen flex flex-col"
-      style={{
-        background: `linear-gradient(160deg, ${C.navy} 0%, ${C.navyDeep} 60%, ${C.ink} 100%)`,
-        color: C.cream,
-        fontFamily: BODY,
-        paddingTop: "max(2rem, calc(env(safe-area-inset-top) + 1rem))",
-        paddingBottom: "max(2rem, calc(env(safe-area-inset-bottom) + 1rem))",
-      }}
-    >
-      <div className="flex-1 flex flex-col justify-center px-6 py-8 max-w-md w-full mx-auto">
-        <div className="flex items-center gap-3 mb-10">
-          <Logomark variant="light" className="w-12 h-12 shrink-0" />
-          <div>
-            <div
-              className="text-[10px] uppercase tracking-[0.28em] font-bold"
-              style={{ color: C.sky }}
-            >
-              Palm Volley Pickle
-            </div>
-            <div
-              className="text-2xl uppercase leading-none"
-              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
-            >
-              Court Report
-            </div>
-          </div>
-        </div>
-
-        <div
-          className="w-12 h-12 rounded-sm flex items-center justify-center mb-5"
-          style={{ background: "rgba(96,192,226,0.18)" }}
-        >
-          <KeyRound size={22} color={C.sky} />
-        </div>
-        <h1
-          className="text-3xl uppercase leading-[1.05] mb-2"
-          style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
-        >
-          You've been invited
-        </h1>
-        <p className="text-sm mb-8" style={{ color: "rgba(246,249,251,0.7)" }}>
-          Sign in or create an account to join the group. The invite is saved —
-          we'll add you automatically once you're in.
-        </p>
-
-        {error && (
-          <div
-            className="mb-5 px-3 py-2.5 rounded-sm text-xs"
-            style={{
-              background: "rgba(234,78,51,0.15)",
-              color: "#ffd9d2",
-              border: `1px solid ${C.coral}`,
-            }}
-          >
-            {error}
-          </div>
-        )}
-
-        <div
-          className="px-4 py-3 rounded-sm mb-6 flex items-center gap-3"
-          style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)" }}
-        >
-          <span
-            className="text-[10px] uppercase tracking-[0.22em] font-bold shrink-0"
-            style={{ color: "rgba(246,249,251,0.55)" }}
-          >
-            Code
-          </span>
-          <span
-            className="font-bold"
-            style={{ fontFamily: DISPLAY, fontSize: "16px", letterSpacing: "0.18em" }}
-          >
-            {token}
-          </span>
-        </div>
-
-        <button
-          onClick={() => {
-            onSignIn?.();
-            setShowAuth(true);
-          }}
-          className="w-full py-3.5 rounded-sm uppercase tracking-[0.18em] flex items-center justify-center gap-2"
-          style={{
-            background: C.coral,
-            color: C.cream,
-            fontFamily: DISPLAY,
-            fontSize: "14px",
-            boxShadow: "0 8px 20px -6px rgba(234,78,51,0.35)",
-          }}
-        >
-          Sign in to accept <ArrowRight size={14} />
-        </button>
-
-        <button
-          onClick={onCancel}
-          className="w-full mt-3 py-2 text-[11px] uppercase tracking-[0.22em] font-bold"
-          style={{ color: "rgba(246,249,251,0.45)" }}
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
 
 // ---------- Claim / Join Flow ----------
 //
