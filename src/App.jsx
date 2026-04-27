@@ -28,8 +28,11 @@ import {
   Swords,
   Medal,
   Zap,
+  ArrowRight,
 } from "lucide-react";
 import Logomark from "./components/Logomark";
+import AuthGate from "./components/AuthGate";
+import { supabase } from "./lib/supabase";
 
 // ---------- Profile navigation context ----------
 // Exposes a single function `openProfile(playerId)` that deep children can call
@@ -121,6 +124,58 @@ const api = {
       p_note: game.note,
     }),
   deleteGame: (code, id) => rpc("tracker_delete_game", { p_code: code, p_id: id }),
+};
+
+// Auth-aware RPC calls — go through the Supabase SDK so the user's auth
+// token is automatically attached and the server can resolve auth.uid().
+async function authRpc(fn, args = {}) {
+  const { data, error } = await supabase.rpc(fn, args);
+  if (error) throw new Error(error.message || String(error));
+  return data;
+}
+
+const authApi = {
+  myGroups: () => authRpc("tracker_my_groups"),
+  unclaimedPlayersInGroup: (groupId) =>
+    authRpc("tracker_unclaimed_players_in_group", { p_group_id: groupId }),
+  claimPlayer: (playerId, groupId) =>
+    authRpc("tracker_claim_player", { p_player_id: playerId, p_group_id: groupId }),
+  createPlayerForSelf: (displayName, groupId) =>
+    authRpc("tracker_create_player_for_self", {
+      p_display_name: displayName,
+      p_group_id: groupId,
+    }),
+  pendingMembers: (groupId) =>
+    authRpc("tracker_pending_members", { p_group_id: groupId }),
+  approveMember: (userId, groupId) =>
+    authRpc("tracker_approve_member", { p_user_id: userId, p_group_id: groupId }),
+  rejectMember: (userId, groupId) =>
+    authRpc("tracker_reject_member", { p_user_id: userId, p_group_id: groupId }),
+  setClaimWindow: (groupId, open) =>
+    authRpc("tracker_set_claim_window", { p_group_id: groupId, p_open: open }),
+
+  // ---- Step 4: auth-aware data access ----
+  listPlayers: (groupId) =>
+    authRpc("tracker_list_players_v2", { p_group_id: groupId }),
+  addPlayer: (groupId, name) =>
+    authRpc("tracker_add_player_v2", { p_group_id: groupId, p_name: name }),
+  deletePlayer: (groupId, playerId) =>
+    authRpc("tracker_delete_player_v2", { p_group_id: groupId, p_player_id: playerId }),
+  listGames: (groupId) =>
+    authRpc("tracker_list_games_v2", { p_group_id: groupId }),
+  addGame: (groupId, game) =>
+    authRpc("tracker_add_game_v2", {
+      p_group_id: groupId,
+      p_date: game.date,
+      p_mode: game.mode,
+      p_team1: game.team1,
+      p_team2: game.team2,
+      p_score1: game.score1,
+      p_score2: game.score2,
+      p_note: game.note,
+    }),
+  deleteGame: (groupId, gameId) =>
+    authRpc("tracker_delete_game_v2", { p_group_id: groupId, p_game_id: gameId }),
 };
 
 // ---------- Helpers ----------
@@ -311,10 +366,65 @@ function compareBySortKey(sortKey) {
 
 // ---------- Root ----------
 export default function App() {
+  // ---- Group state (legacy invite-code flow) ----
   const [group, setGroup] = useState(null); // { id, name, code }
   const [bootstrapped, setBootstrapped] = useState(false);
 
-  // On mount, try to restore a saved group and revalidate it
+  // ---- Auth + memberships ----
+  // session: undefined = loading, null = signed out, object = signed in
+  const [session, setSession] = useState(undefined);
+  // memberships: undefined = loading, [] = none, [{...}] = list
+  const [memberships, setMemberships] = useState(undefined);
+  const [inviteCodeMode, setInviteCodeMode] = useState(false);
+
+  // refreshMemberships re-queries the user's group memberships. Called after
+  // claim/join actions and on auth state changes.
+  const refreshMemberships = useCallback(async () => {
+    try {
+      const data = await authApi.myGroups();
+      setMemberships(data || []);
+      return data || [];
+    } catch (e) {
+      console.error("Failed to load memberships", e);
+      setMemberships([]);
+      return [];
+    }
+  }, []);
+
+  // ---- Auth session lifecycle ----
+  useEffect(() => {
+    let unsub = null;
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      setSession(data.session ?? null);
+      const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+        setSession(newSession ?? null);
+        // Reset memberships on session change so they get re-fetched for the
+        // new user (or cleared on sign-out).
+        setMemberships(newSession ? undefined : []);
+      });
+      unsub = sub?.subscription;
+    })();
+    return () => {
+      unsub?.unsubscribe?.();
+    };
+  }, []);
+
+  // ---- Memberships fetch on session ----
+  // Whenever the user becomes signed in, fetch their memberships so we can
+  // route to TrackerApp (active member) vs claim flow (no membership) vs
+  // pending screen (only pending memberships).
+  useEffect(() => {
+    if (session) {
+      refreshMemberships();
+    } else {
+      setMemberships(undefined);
+    }
+  }, [session, refreshMemberships]);
+
+  // ---- Group restoration (legacy invite-code path) ----
+  // Only used by the invite-code escape hatch. Once a session-based user has
+  // an active membership, this state is bypassed entirely.
   useEffect(() => {
     (async () => {
       const saved = await loadGroupFromStorage();
@@ -329,7 +439,6 @@ export default function App() {
             await clearGroupFromStorage();
           }
         } catch (e) {
-          // Network blip — keep the saved group so user isn't kicked out
           setGroup(saved);
         }
       }
@@ -337,25 +446,116 @@ export default function App() {
     })();
   }, []);
 
-  if (!bootstrapped) return <Splash message="Warming up the court…" />;
+  // ---- Routing logic ----
 
-  if (!group) {
+  // Wait for both auth + group restoration to settle.
+  if (!bootstrapped || session === undefined) {
+    return <Splash message="Warming up the court…" />;
+  }
+
+  // Unauthenticated and not bypassing → AuthGate.
+  if (!session && !inviteCodeMode) {
+    return <AuthGate onUseInviteCode={() => setInviteCodeMode(true)} />;
+  }
+
+  // Invite-code path bypasses memberships entirely.
+  if (!session && inviteCodeMode) {
+    if (!group) {
+      return (
+        <GroupGate
+          onReady={async (g) => {
+            setGroup(g);
+            await saveGroupToStorage(g);
+          }}
+        />
+      );
+    }
     return (
-      <GroupGate
-        onReady={async (g) => {
-          setGroup(g);
-          await saveGroupToStorage(g);
+      <TrackerApp
+        group={group}
+        session={null}
+        onLeaveGroup={async () => {
+          await clearGroupFromStorage();
+          setGroup(null);
+        }}
+        onSignOut={async () => {
+          await clearGroupFromStorage();
+          setGroup(null);
+          setInviteCodeMode(false);
+          await supabase.auth.signOut();
+        }}
+        onMembershipsChanged={refreshMemberships}
+      />
+    );
+  }
+
+  // Authenticated path: wait for memberships to load.
+  if (memberships === undefined) {
+    return <Splash message="Loading your groups…" />;
+  }
+
+  // Active memberships exist → drop into the tracker. Pick the most recent
+  // active group as the default. Pending-only memberships fall through to
+  // the join-pending screen.
+  const activeMemberships = memberships.filter((m) => m.status === "active");
+  const pendingMemberships = memberships.filter((m) => m.status === "pending");
+
+  if (activeMemberships.length > 0) {
+    // Use saved group if it's in the active list, otherwise the most recent.
+    const saved = group;
+    const matched =
+      saved && activeMemberships.find((m) => m.group_id === saved.id);
+    const chosen = matched
+      ? saved
+      : {
+          id: activeMemberships[0].group_id,
+          name: activeMemberships[0].name,
+          code: activeMemberships[0].invite_code,
+        };
+    return (
+      <TrackerApp
+        group={chosen}
+        session={session}
+        memberships={memberships}
+        onLeaveGroup={async () => {
+          await clearGroupFromStorage();
+          setGroup(null);
+          await refreshMemberships();
+        }}
+        onSignOut={async () => {
+          await clearGroupFromStorage();
+          setGroup(null);
+          setInviteCodeMode(false);
+          setMemberships(undefined);
+          await supabase.auth.signOut();
+        }}
+        onMembershipsChanged={refreshMemberships}
+      />
+    );
+  }
+
+  // Only pending memberships? Show waiting screen.
+  if (pendingMemberships.length > 0) {
+    return (
+      <JoinPendingScreen
+        memberships={pendingMemberships}
+        onRefresh={refreshMemberships}
+        onSignOut={async () => {
+          setMemberships(undefined);
+          await supabase.auth.signOut();
         }}
       />
     );
   }
 
+  // No memberships at all → claim/join flow.
   return (
-    <TrackerApp
-      group={group}
-      onLeaveGroup={async () => {
-        await clearGroupFromStorage();
-        setGroup(null);
+    <ClaimOrJoinFlow
+      session={session}
+      onComplete={refreshMemberships}
+      onSignOut={async () => {
+        setMemberships(undefined);
+        await supabase.auth.signOut();
       }}
     />
   );
@@ -373,6 +573,500 @@ function Splash({ message }) {
           <RefreshCw size={18} />
         </div>
         <div className="text-xs uppercase tracking-[0.22em] font-bold">{message}</div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Claim / Join Flow ----------
+//
+// State machine for a signed-in user with no active memberships:
+//   step='start'            → choose: claim existing record, or create new
+//   step='enter-code'       → enter group code to find a group to claim into
+//   step='claim-list'       → show unclaimed players in chosen group → pick one
+//   step='create-name'      → enter display name when joining as a new player
+//   step='success'          → confirmation, then auto-routes to TrackerApp
+//
+// All paths terminate by calling onComplete(), which re-fetches memberships
+// in the parent App and routes the user into the tracker.
+function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
+  const [step, setStep] = useState("start");
+  const [code, setCode] = useState("");
+  const [groupCtx, setGroupCtx] = useState(null); // { id, name, code }
+  const [unclaimed, setUnclaimed] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [intent, setIntent] = useState(null); // 'claim' | 'create'
+  const [displayName, setDisplayName] = useState("");
+
+  const lookupGroup = async () => {
+    setErr(null);
+    setBusy(true);
+    try {
+      // Use the legacy join-by-code RPC to find the group. It returns the
+      // group row if the code is valid; we use that to learn the group's id.
+      const rows = await api.joinGroup(code.trim());
+      if (!rows?.length) {
+        setErr("No group with that code.");
+        return;
+      }
+      const g = { id: rows[0].id, name: rows[0].name, code: rows[0].invite_code };
+      setGroupCtx(g);
+      if (intent === "claim") {
+        const players = await authApi.unclaimedPlayersInGroup(g.id);
+        setUnclaimed(players || []);
+        setStep("claim-list");
+      } else {
+        setStep("create-name");
+      }
+    } catch (e) {
+      setErr(e.message || "Couldn't find that group.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const claimPlayer = async (playerId) => {
+    setErr(null);
+    setBusy(true);
+    try {
+      await authApi.claimPlayer(playerId, groupCtx.id);
+      // Save the chosen group to localStorage so TrackerApp picks it up.
+      await saveGroupToStorage(groupCtx);
+      setStep("success");
+      setTimeout(() => onComplete(), 800);
+    } catch (e) {
+      setErr(e.message || "Couldn't claim that player.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createPlayer = async () => {
+    setErr(null);
+    if (!displayName.trim()) {
+      setErr("Display name is required.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await authApi.createPlayerForSelf(displayName.trim(), groupCtx.id);
+      await saveGroupToStorage(groupCtx);
+      setStep("success");
+      setTimeout(() => onComplete(), 800);
+    } catch (e) {
+      setErr(e.message || "Couldn't create your player record.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="min-h-screen flex flex-col"
+      style={{
+        background: `linear-gradient(160deg, ${C.navy} 0%, ${C.navyDeep} 60%, ${C.ink} 100%)`,
+        color: C.cream,
+        fontFamily: BODY,
+        paddingTop: "max(2rem, calc(env(safe-area-inset-top) + 1rem))",
+        paddingBottom: "max(2rem, calc(env(safe-area-inset-bottom) + 1rem))",
+      }}
+    >
+      <div className="flex-1 flex flex-col justify-center px-6 py-8 max-w-md w-full mx-auto">
+        <div className="flex items-center gap-3 mb-8">
+          <Logomark variant="light" className="w-12 h-12 shrink-0" />
+          <div>
+            <div
+              className="text-[10px] uppercase tracking-[0.28em] font-bold"
+              style={{ color: C.sky }}
+            >
+              Palm Volley Pickle
+            </div>
+            <div
+              className="text-2xl uppercase leading-none"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+            >
+              Court Report
+            </div>
+          </div>
+        </div>
+
+        {step === "start" && (
+          <>
+            <h1
+              className="text-3xl uppercase leading-[1.05] mb-2"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+            >
+              Find your group
+            </h1>
+            <p className="text-sm mb-7" style={{ color: "rgba(246,249,251,0.7)" }}>
+              Welcome, {session.user.email}. Tell us how you want to get started.
+            </p>
+            <ChoiceButton
+              icon={<Sparkles size={18} />}
+              title="I'm an existing player"
+              subtitle="Claim your existing record to keep your stats"
+              onClick={() => {
+                setIntent("claim");
+                setStep("enter-code");
+              }}
+              primary
+            />
+            <div className="h-3" />
+            <ChoiceButton
+              icon={<KeyRound size={18} />}
+              title="I'm new to a group"
+              subtitle="Join a group with an invite code"
+              onClick={() => {
+                setIntent("create");
+                setStep("enter-code");
+              }}
+            />
+            <div
+              className="mt-8 pt-5 text-center"
+              style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}
+            >
+              <button
+                onClick={onSignOut}
+                className="text-[11px] uppercase tracking-[0.22em] font-bold"
+                style={{ color: "rgba(246,249,251,0.45)" }}
+              >
+                Sign out
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === "enter-code" && (
+          <CodeEntryStep
+            code={code}
+            setCode={setCode}
+            busy={busy}
+            err={err}
+            onSubmit={lookupGroup}
+            onBack={() => {
+              setErr(null);
+              setStep("start");
+            }}
+          />
+        )}
+
+        {step === "claim-list" && (
+          <ClaimListStep
+            group={groupCtx}
+            unclaimed={unclaimed}
+            busy={busy}
+            err={err}
+            onClaim={claimPlayer}
+            onCreateInstead={() => {
+              setIntent("create");
+              setErr(null);
+              setStep("create-name");
+            }}
+            onBack={() => {
+              setErr(null);
+              setStep("enter-code");
+            }}
+          />
+        )}
+
+        {step === "create-name" && (
+          <CreatePlayerStep
+            group={groupCtx}
+            displayName={displayName}
+            setDisplayName={setDisplayName}
+            busy={busy}
+            err={err}
+            onSubmit={createPlayer}
+            onBack={() => {
+              setErr(null);
+              setStep(intent === "claim" ? "claim-list" : "enter-code");
+            }}
+          />
+        )}
+
+        {step === "success" && (
+          <div className="text-center py-10">
+            <div
+              className="w-14 h-14 rounded-sm flex items-center justify-center mx-auto mb-5"
+              style={{ background: C.coral }}
+            >
+              <Check size={26} color={C.cream} strokeWidth={3} />
+            </div>
+            <h2
+              className="text-2xl uppercase mb-2"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+            >
+              You're in
+            </h2>
+            <p className="text-sm" style={{ color: "rgba(246,249,251,0.75)" }}>
+              Loading {groupCtx?.name || "the tracker"}…
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ChoiceButton({ icon, title, subtitle, onClick, primary }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full text-left p-4 rounded-sm flex items-center gap-3 transition-all active:scale-[0.99]"
+      style={{
+        background: primary ? C.coral : "rgba(255,255,255,0.06)",
+        border: primary ? "none" : "1px solid rgba(255,255,255,0.12)",
+        color: C.cream,
+      }}
+    >
+      <div
+        className="w-10 h-10 rounded-sm flex items-center justify-center shrink-0"
+        style={{ background: primary ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.1)" }}
+      >
+        {icon}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="font-bold text-[15px]" style={{ fontFamily: BODY }}>
+          {title}
+        </div>
+        <div
+          className="text-xs mt-0.5"
+          style={{ color: primary ? "rgba(255,255,255,0.85)" : "rgba(246,249,251,0.6)" }}
+        >
+          {subtitle}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function CodeEntryStep({ code, setCode, busy, err, onSubmit, onBack }) {
+  const inputRef = useRef(null);
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+  return (
+    <div>
+      <button
+        onClick={onBack}
+        className="text-[11px] uppercase tracking-[0.22em] font-bold mb-6 opacity-70"
+      >
+        ← Back
+      </button>
+      <h2 className="text-2xl mb-2 uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
+        Enter group code
+      </h2>
+      <p className="text-sm mb-6" style={{ color: "rgba(246,249,251,0.7)" }}>
+        Ask your group's owner for the 6-character invite code.
+      </p>
+      <input
+        ref={inputRef}
+        type="text"
+        value={code}
+        maxLength={8}
+        onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+        onKeyDown={(e) => e.key === "Enter" && code.trim() && onSubmit()}
+        placeholder="ABC123"
+        className="w-full px-4 py-4 rounded-sm text-center outline-none"
+        style={{
+          background: "rgba(255,255,255,0.08)",
+          border: "1px solid rgba(255,255,255,0.18)",
+          color: C.cream,
+          fontFamily: DISPLAY,
+          fontSize: "28px",
+          letterSpacing: "0.3em",
+        }}
+      />
+      {err && (
+        <div className="text-xs mt-3" style={{ color: C.coral }}>
+          {err}
+        </div>
+      )}
+      <button
+        onClick={onSubmit}
+        disabled={!code.trim() || busy}
+        className="w-full mt-6 py-3.5 rounded-sm text-base uppercase tracking-[0.18em] disabled:opacity-40"
+        style={{ background: C.coral, color: C.cream, fontFamily: DISPLAY }}
+      >
+        {busy ? "Looking up…" : "Continue"}
+      </button>
+    </div>
+  );
+}
+
+function ClaimListStep({ group, unclaimed, busy, err, onClaim, onCreateInstead, onBack }) {
+  return (
+    <div>
+      <button
+        onClick={onBack}
+        className="text-[11px] uppercase tracking-[0.22em] font-bold mb-6 opacity-70"
+      >
+        ← Back
+      </button>
+      <h2 className="text-2xl mb-2 uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
+        Which one's you?
+      </h2>
+      <p className="text-sm mb-6" style={{ color: "rgba(246,249,251,0.7)" }}>
+        Pick your name from the {group?.name} roster to claim your stats.
+      </p>
+      {unclaimed.length === 0 ? (
+        <div
+          className="rounded-sm p-5 text-center text-sm"
+          style={{
+            background: "rgba(255,255,255,0.06)",
+            border: "1px solid rgba(255,255,255,0.12)",
+            color: "rgba(246,249,251,0.75)",
+          }}
+        >
+          No unclaimed players in this group right now. Claim a fresh new player record below.
+        </div>
+      ) : (
+        <div className="space-y-2 max-h-[55vh] overflow-y-auto">
+          {unclaimed.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => onClaim(p.id)}
+              disabled={busy}
+              className="w-full text-left p-4 rounded-sm flex items-center justify-between transition-all active:scale-[0.99] disabled:opacity-50"
+              style={{
+                background: "rgba(255,255,255,0.06)",
+                border: "1px solid rgba(255,255,255,0.12)",
+                color: C.cream,
+              }}
+            >
+              <span className="font-bold text-[15px]">{p.name}</span>
+              <ArrowRight size={16} color={C.sky} />
+            </button>
+          ))}
+        </div>
+      )}
+      {err && (
+        <div className="text-xs mt-3" style={{ color: C.coral }}>
+          {err}
+        </div>
+      )}
+      <div
+        className="mt-6 pt-5 text-center"
+        style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}
+      >
+        <button
+          onClick={onCreateInstead}
+          className="text-xs"
+          style={{ color: "rgba(246,249,251,0.65)" }}
+        >
+          Don't see your name? Create a new player instead →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CreatePlayerStep({ group, displayName, setDisplayName, busy, err, onSubmit, onBack }) {
+  const inputRef = useRef(null);
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+  return (
+    <div>
+      <button
+        onClick={onBack}
+        className="text-[11px] uppercase tracking-[0.22em] font-bold mb-6 opacity-70"
+      >
+        ← Back
+      </button>
+      <h2 className="text-2xl mb-2 uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
+        What should we call you?
+      </h2>
+      <p className="text-sm mb-6" style={{ color: "rgba(246,249,251,0.7)" }}>
+        This shows up wherever your name appears in {group?.name}.
+      </p>
+      <input
+        ref={inputRef}
+        type="text"
+        value={displayName}
+        maxLength={40}
+        onChange={(e) => setDisplayName(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && displayName.trim() && onSubmit()}
+        placeholder="e.g. James S."
+        className="w-full px-4 py-3.5 rounded-sm text-base font-semibold outline-none"
+        style={{
+          background: "rgba(255,255,255,0.08)",
+          border: "1px solid rgba(255,255,255,0.18)",
+          color: C.cream,
+        }}
+      />
+      {err && (
+        <div className="text-xs mt-3" style={{ color: C.coral }}>
+          {err}
+        </div>
+      )}
+      <button
+        onClick={onSubmit}
+        disabled={!displayName.trim() || busy}
+        className="w-full mt-6 py-3.5 rounded-sm text-base uppercase tracking-[0.18em] disabled:opacity-40"
+        style={{ background: C.coral, color: C.cream, fontFamily: DISPLAY }}
+      >
+        {busy ? "Saving…" : "Join"}
+      </button>
+    </div>
+  );
+}
+
+// Pending-approval waiting screen. Shown when the user has only pending
+// memberships (e.g., they joined a group whose claim window is closed).
+// Polls memberships periodically so the user is dropped into the app
+// the moment the owner approves.
+function JoinPendingScreen({ memberships, onRefresh, onSignOut }) {
+  useEffect(() => {
+    const interval = setInterval(() => onRefresh(), 8000);
+    return () => clearInterval(interval);
+  }, [onRefresh]);
+
+  return (
+    <div
+      className="min-h-screen flex flex-col"
+      style={{
+        background: `linear-gradient(160deg, ${C.navy} 0%, ${C.navyDeep} 60%, ${C.ink} 100%)`,
+        color: C.cream,
+        fontFamily: BODY,
+        paddingTop: "max(2rem, calc(env(safe-area-inset-top) + 1rem))",
+        paddingBottom: "max(2rem, calc(env(safe-area-inset-bottom) + 1rem))",
+      }}
+    >
+      <div className="flex-1 flex flex-col justify-center px-6 py-8 max-w-md w-full mx-auto text-center">
+        <Logomark variant="light" className="w-14 h-14 mx-auto mb-6" />
+        <h2
+          className="text-3xl uppercase mb-3 leading-tight"
+          style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+        >
+          Waiting for approval
+        </h2>
+        <p className="text-sm mb-6" style={{ color: "rgba(246,249,251,0.75)" }}>
+          You requested to join{" "}
+          <strong>{memberships.map((m) => m.name).join(", ")}</strong>. The group
+          owner will get a notification — you'll be dropped in as soon as they
+          approve.
+        </p>
+        <button
+          onClick={onRefresh}
+          className="text-[11px] uppercase tracking-[0.22em] font-bold flex items-center justify-center gap-1.5 mx-auto"
+          style={{ color: C.sky }}
+        >
+          <RefreshCw size={12} /> Check again
+        </button>
+        <div
+          className="mt-10 pt-5"
+          style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}
+        >
+          <button
+            onClick={onSignOut}
+            className="text-[11px] uppercase tracking-[0.22em] font-bold"
+            style={{ color: "rgba(246,249,251,0.45)" }}
+          >
+            Sign out
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -716,7 +1410,14 @@ function CreatedGroupSuccess({ group, onContinue }) {
 }
 
 // ---------- Main App (scoped to group) ----------
-function TrackerApp({ group, onLeaveGroup }) {
+function TrackerApp({
+  group,
+  session,
+  memberships,
+  onLeaveGroup,
+  onSignOut,
+  onMembershipsChanged,
+}) {
   const [players, setPlayers] = useState([]);
   const [games, setGames] = useState([]);
   const [view, setView] = useState("play");
@@ -741,10 +1442,49 @@ function TrackerApp({ group, onLeaveGroup }) {
     setTimeout(() => setToast(null), 2400);
   }, []);
 
+  // ---- Data API switcher ----
+  // When the user is signed in AND has an active membership for this group,
+  // use the auth-aware v2 RPCs (which take group_id and stamp created_by).
+  // Otherwise, fall back to the legacy code-based RPCs (used by the invite-code
+  // escape hatch on the AuthGate). The legacy path goes away in Step 5.
+  const isAuthedMember = !!(
+    session &&
+    (memberships || []).some((m) => m.group_id === group.id && m.status === "active")
+  );
+
+  const dataApi = useMemo(() => {
+    // Normalize return shapes: v1 RPCs return arrays, v2 RPCs return single
+    // records or null. Call sites should always get { row } for inserts and
+    // arrays for lists, regardless of which path is in use.
+    const firstRow = (resp) => {
+      if (Array.isArray(resp)) return resp[0] ?? null;
+      return resp ?? null;
+    };
+
+    if (isAuthedMember) {
+      return {
+        listPlayers: () => authApi.listPlayers(group.id),
+        addPlayer: async (name) => firstRow(await authApi.addPlayer(group.id, name)),
+        deletePlayer: (playerId) => authApi.deletePlayer(group.id, playerId),
+        listGames: () => authApi.listGames(group.id),
+        addGame: async (game) => firstRow(await authApi.addGame(group.id, game)),
+        deleteGame: (gameId) => authApi.deleteGame(group.id, gameId),
+      };
+    }
+    return {
+      listPlayers: () => api.listPlayers(group.code),
+      addPlayer: async (name) => firstRow(await api.addPlayer(group.code, name)),
+      deletePlayer: (playerId) => api.deletePlayer(group.code, playerId),
+      listGames: () => api.listGames(group.code),
+      addGame: async (game) => firstRow(await api.addGame(group.code, game)),
+      deleteGame: (gameId) => api.deleteGame(group.code, gameId),
+    };
+  }, [isAuthedMember, group.id, group.code]);
+
   const refresh = useCallback(async () => {
     setSyncing(true);
     try {
-      const [ps, gs] = await Promise.all([api.listPlayers(group.code), api.listGames(group.code)]);
+      const [ps, gs] = await Promise.all([dataApi.listPlayers(), dataApi.listGames()]);
       setPlayers(ps || []);
       setGames((gs || []).map(mapGame));
       setOnline(true);
@@ -756,7 +1496,7 @@ function TrackerApp({ group, onLeaveGroup }) {
       setSyncing(false);
       setLoaded(true);
     }
-  }, [group.code, flash]);
+  }, [dataApi, flash]);
 
   useEffect(() => {
     refresh();
@@ -778,13 +1518,12 @@ function TrackerApp({ group, onLeaveGroup }) {
       return false;
     }
     try {
-      const rows = await api.addPlayer(group.code, name);
-      const row = rows?.[0];
+      const row = await dataApi.addPlayer(name);
       if (row) setPlayers((prev) => [...prev, row].sort((a, b) => a.name.localeCompare(b.name)));
       return true;
     } catch (err) {
       console.error(err);
-      flash("Couldn't add player");
+      flash(err.message || "Couldn't add player");
       return false;
     }
   };
@@ -802,24 +1541,23 @@ function TrackerApp({ group, onLeaveGroup }) {
     const snapshot = players;
     setPlayers((prev) => prev.filter((p) => p.id !== id));
     try {
-      await api.deletePlayer(group.code, id);
+      await dataApi.deletePlayer(id);
     } catch (err) {
       console.error(err);
       setPlayers(snapshot);
-      flash("Couldn't remove player");
+      flash(err.message || "Couldn't remove player");
     }
   };
 
   const addGame = async (game) => {
     try {
-      const rows = await api.addGame(group.code, game);
-      const row = rows?.[0];
+      const row = await dataApi.addGame(game);
       if (row) setGames((prev) => [mapGame(row), ...prev]);
       flash("Game logged");
       setView("games");
     } catch (err) {
       console.error(err);
-      flash("Couldn't save game");
+      flash(err.message || "Couldn't save game");
     }
   };
 
@@ -828,11 +1566,11 @@ function TrackerApp({ group, onLeaveGroup }) {
     const snapshot = games;
     setGames((prev) => prev.filter((g) => g.id !== id));
     try {
-      await api.deleteGame(group.code, id);
+      await dataApi.deleteGame(id);
     } catch (err) {
       console.error(err);
       setGames(snapshot);
-      flash("Couldn't delete");
+      flash(err.message || "Couldn't delete");
     }
   };
 
@@ -911,11 +1649,18 @@ function TrackerApp({ group, onLeaveGroup }) {
         {groupModalOpen && (
           <GroupModal
             group={group}
+            session={session}
+            memberships={memberships}
             onClose={() => setGroupModalOpen(false)}
             onLeave={async () => {
               setGroupModalOpen(false);
               await onLeaveGroup();
             }}
+            onSignOut={async () => {
+              setGroupModalOpen(false);
+              await onSignOut();
+            }}
+            onMembershipsChanged={onMembershipsChanged}
           />
         )}
       </div>
@@ -1001,8 +1746,37 @@ function Header({ group, online, syncing, onRefresh, onOpenSettings }) {
 }
 
 // ---------- Group Modal ----------
-function GroupModal({ group, onClose, onLeave }) {
+function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, onMembershipsChanged }) {
   const [copied, setCopied] = useState(false);
+
+  // Owner detection: check this user's membership in this specific group.
+  const myMembership = (memberships || []).find((m) => m.group_id === group.id);
+  const isOwner = myMembership?.role === "owner";
+
+  // Owner-only state: pending members + claim window status.
+  const [pending, setPending] = useState([]);
+  const [claimOpen, setClaimOpen] = useState(myMembership?.claim_window_open ?? true);
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [adminMsg, setAdminMsg] = useState(null);
+
+  // Sync local claimOpen state if the membership data refreshes.
+  useEffect(() => {
+    if (myMembership) setClaimOpen(myMembership.claim_window_open);
+  }, [myMembership?.claim_window_open]);
+
+  // Owners only: load pending members on open.
+  useEffect(() => {
+    if (!isOwner) return;
+    (async () => {
+      try {
+        const rows = await authApi.pendingMembers(group.id);
+        setPending(rows || []);
+      } catch (e) {
+        console.error("Failed to load pending members", e);
+      }
+    })();
+  }, [isOwner, group.id]);
+
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(group.code);
@@ -1027,6 +1801,56 @@ function GroupModal({ group, onClose, onLeave }) {
       )
     ) {
       onLeave();
+    }
+  };
+  const signOut = () => {
+    if (window.confirm("Sign out of your account?")) {
+      onSignOut();
+    }
+  };
+
+  const toggleClaimWindow = async () => {
+    setAdminBusy(true);
+    setAdminMsg(null);
+    try {
+      const result = await authApi.setClaimWindow(group.id, !claimOpen);
+      setClaimOpen(result.claim_window_open);
+      onMembershipsChanged?.();
+      setAdminMsg(
+        result.claim_window_open
+          ? "Claim window is open."
+          : "Claim window closed. Only owner can grant new claims."
+      );
+    } catch (e) {
+      setAdminMsg(e.message || "Couldn't update setting.");
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
+  const approveMember = async (userId) => {
+    setAdminBusy(true);
+    try {
+      await authApi.approveMember(userId, group.id);
+      setPending((prev) => prev.filter((p) => p.user_id !== userId));
+      onMembershipsChanged?.();
+    } catch (e) {
+      setAdminMsg(e.message || "Couldn't approve.");
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
+  const rejectMember = async (userId) => {
+    if (!window.confirm("Reject this person? They'll need to request again.")) return;
+    setAdminBusy(true);
+    try {
+      await authApi.rejectMember(userId, group.id);
+      setPending((prev) => prev.filter((p) => p.user_id !== userId));
+    } catch (e) {
+      setAdminMsg(e.message || "Couldn't reject.");
+    } finally {
+      setAdminBusy(false);
     }
   };
   return (
@@ -1112,6 +1936,106 @@ function GroupModal({ group, onClose, onLeave }) {
           you trust.
         </p>
 
+        {/* Owner-only admin controls */}
+        {isOwner && (
+          <div
+            className="mb-5 pt-4 pb-1"
+            style={{ borderTop: `1px solid ${C.line}` }}
+          >
+            <div
+              className="text-[10px] uppercase tracking-[0.22em] font-bold mb-3 px-1"
+              style={{ color: C.coral }}
+            >
+              Owner Controls
+            </div>
+
+            {/* Claim window toggle */}
+            <div
+              className="rounded-sm p-3 flex items-start gap-3 mb-3"
+              style={{ background: "white", border: `1px solid ${C.line}` }}
+            >
+              <div className="flex-1 min-w-0">
+                <div
+                  className="text-sm font-bold mb-0.5"
+                  style={{ color: C.ink, fontFamily: BODY }}
+                >
+                  Trust-based claiming
+                </div>
+                <div className="text-xs" style={{ color: C.muted, lineHeight: 1.4 }}>
+                  When open, signed-in members can claim any unclaimed player record.
+                  Close once everyone has claimed to lock down identity.
+                </div>
+              </div>
+              <button
+                onClick={toggleClaimWindow}
+                disabled={adminBusy}
+                className="shrink-0 px-3 py-1.5 rounded-sm text-[11px] uppercase tracking-[0.18em] font-bold disabled:opacity-50"
+                style={{
+                  background: claimOpen ? C.coral : C.cream,
+                  color: claimOpen ? C.cream : C.ink,
+                  border: claimOpen ? "none" : `1px solid ${C.line}`,
+                  fontFamily: BODY,
+                }}
+              >
+                {claimOpen ? "Open" : "Closed"}
+              </button>
+            </div>
+
+            {/* Pending member approvals */}
+            {pending.length > 0 && (
+              <div
+                className="rounded-sm overflow-hidden"
+                style={{ background: "white", border: `1px solid ${C.line}` }}
+              >
+                <div
+                  className="px-3 py-2 text-[10px] uppercase tracking-[0.22em] font-bold flex items-center justify-between"
+                  style={{ background: C.cream, borderBottom: `1px solid ${C.line}`, color: C.muted }}
+                >
+                  <span>Pending Approval · {pending.length}</span>
+                </div>
+                {pending.map((p) => (
+                  <div
+                    key={p.user_id}
+                    className="px-3 py-2.5 flex items-center gap-2"
+                    style={{ borderTop: `1px solid ${C.line}` }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-bold truncate" style={{ color: C.ink }}>
+                        {p.display_name || p.email}
+                      </div>
+                      <div className="text-[11px] truncate" style={{ color: C.muted }}>
+                        {p.email}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => approveMember(p.user_id)}
+                      disabled={adminBusy}
+                      className="px-3 py-1.5 rounded-sm text-[11px] uppercase tracking-[0.18em] font-bold disabled:opacity-50"
+                      style={{ background: C.coral, color: C.cream, fontFamily: BODY }}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => rejectMember(p.user_id)}
+                      disabled={adminBusy}
+                      className="px-3 py-1.5 rounded-sm text-[11px] uppercase tracking-[0.18em] font-bold disabled:opacity-50"
+                      style={{ background: C.cream, color: C.muted, border: `1px solid ${C.line}`, fontFamily: BODY }}
+                    >
+                      Reject
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {adminMsg && (
+              <div className="text-xs mt-3 px-1" style={{ color: C.muted }}>
+                {adminMsg}
+              </div>
+            )}
+          </div>
+        )}
+
         <button
           onClick={leave}
           className="w-full py-3 rounded-sm flex items-center justify-center gap-2 text-sm font-bold"
@@ -1119,6 +2043,27 @@ function GroupModal({ group, onClose, onLeave }) {
         >
           <LogOut size={14} /> Leave group
         </button>
+
+        {session?.user && (
+          <>
+            <div
+              className="mt-5 pt-4 px-1 text-[10px] uppercase tracking-[0.22em] font-bold"
+              style={{ color: C.muted, borderTop: `1px solid ${C.line}` }}
+            >
+              Signed in as
+            </div>
+            <div className="px-1 mt-1 text-sm font-bold truncate" style={{ color: C.ink }}>
+              {session.user.email}
+            </div>
+            <button
+              onClick={signOut}
+              className="w-full mt-3 py-3 rounded-sm flex items-center justify-center gap-2 text-sm font-bold"
+              style={{ background: C.ink, color: C.cream }}
+            >
+              <LogOut size={14} /> Sign out
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
