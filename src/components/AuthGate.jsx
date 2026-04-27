@@ -30,6 +30,24 @@ const C = {
 const DISPLAY = "'Russo One', 'Archivo Black', sans-serif";
 const BODY = "'Lato', -apple-system, sans-serif";
 
+// Detects whether the app is running as an iOS home-screen PWA (added via
+// "Add to Home Screen" in Safari). Google OAuth has known compatibility
+// issues in this context — the OAuth redirect breaks out of the standalone
+// shell and the session sometimes doesn't propagate back. We hide the Google
+// button in this environment and steer users toward magic link or password,
+// which both work reliably.
+//
+// Detection: navigator.standalone is true ONLY in iOS standalone PWAs. It's
+// undefined/false in regular Safari, on Android, and on desktop. Combined
+// with the iOS user-agent check, this is a reliable positive signal.
+function isIosPwa() {
+  if (typeof window === "undefined" || typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const isIosDevice = /iPad|iPhone|iPod/.test(ua);
+  const isStandalone = navigator.standalone === true;
+  return isIosDevice && isStandalone;
+}
+
 export default function AuthGate({ invitedTo = null }) {
   // Mode flow: welcome (default) → login | signup → check-email after signup.
   // 'welcome' is the entry-point Sign In / Create Account choice screen.
@@ -261,41 +279,64 @@ export default function AuthGate({ invitedTo = null }) {
                 : "Sign in to log games and see your stats."}
             </p>
 
-            {/* Google — primary action */}
-            <button
-              onClick={handleGoogle}
-              disabled={busy}
-              className="w-full flex items-center justify-center gap-3 py-3.5 rounded-sm transition-all active:scale-[0.99] disabled:opacity-50"
-              style={{
-                background: C.cream,
-                color: C.ink,
-                fontFamily: BODY,
-                fontWeight: 700,
-                fontSize: "15px",
-              }}
-            >
-              <GoogleG size={18} /> Continue with Google
-            </button>
-            <div className="flex justify-center mt-2">
-              <span
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] uppercase tracking-[0.2em] font-bold"
-                style={{ background: "rgba(96,192,226,0.18)", color: C.sky }}
-              >
-                <Sparkles size={10} /> Fastest way to sign in
-              </span>
-            </div>
+            {/* Google — primary action. Hidden in iOS PWA mode where it
+                breaks out of the standalone shell and corrupts the session. */}
+            {!isIosPwa() && (
+              <>
+                <button
+                  onClick={handleGoogle}
+                  disabled={busy}
+                  className="w-full flex items-center justify-center gap-3 py-3.5 rounded-sm transition-all active:scale-[0.99] disabled:opacity-50"
+                  style={{
+                    background: C.cream,
+                    color: C.ink,
+                    fontFamily: BODY,
+                    fontWeight: 700,
+                    fontSize: "15px",
+                  }}
+                >
+                  <GoogleG size={18} /> Continue with Google
+                </button>
+                <div className="flex justify-center mt-2">
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] uppercase tracking-[0.2em] font-bold"
+                    style={{ background: "rgba(96,192,226,0.18)", color: C.sky }}
+                  >
+                    <Sparkles size={10} /> Fastest way to sign in
+                  </span>
+                </div>
 
-            {/* Divider */}
-            <div className="flex items-center gap-3 my-6">
-              <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.15)" }} />
-              <span
-                className="text-[10px] uppercase tracking-[0.22em] font-bold"
-                style={{ color: "rgba(246,249,251,0.55)" }}
+                {/* Divider */}
+                <div className="flex items-center gap-3 my-6">
+                  <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.15)" }} />
+                  <span
+                    className="text-[10px] uppercase tracking-[0.22em] font-bold"
+                    style={{ color: "rgba(246,249,251,0.55)" }}
+                  >
+                    Or continue with email
+                  </span>
+                  <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.15)" }} />
+                </div>
+              </>
+            )}
+
+            {/* iOS PWA hint — clarifies for Google-signup users why Google
+                isn't here, and points them to magic link as the easy path. */}
+            {isIosPwa() && mode === "login" && (
+              <div
+                className="mb-5 px-3 py-2.5 rounded-sm text-xs"
+                style={{
+                  background: "rgba(96,192,226,0.12)",
+                  color: "rgba(246,249,251,0.85)",
+                  border: "1px solid rgba(96,192,226,0.4)",
+                  lineHeight: 1.45,
+                }}
               >
-                Or continue with email
-              </span>
-              <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.15)" }} />
-            </div>
+                <strong style={{ color: C.sky }}>From the saved app:</strong>{" "}
+                use your email + password, or tap "Email me a sign-in link" below
+                if you signed up with Google.
+              </div>
+            )}
 
             {/* Email form */}
             {mode === "signup" && (
@@ -484,16 +525,19 @@ function WelcomeScreen({ invitedTo, onSignIn, onSignUp }) {
 
       {/* Tertiary helper line. Tells users that Google works either way so
           they don't worry they have to make a "wrong" choice between
-          Sign In and Create Account if they sign in with Google. */}
-      <div className="mt-6 flex items-center justify-center gap-2">
-        <GoogleG size={14} />
-        <p
-          className="text-[11px]"
-          style={{ color: "rgba(246,249,251,0.55)" }}
-        >
-          Sign in with Google works for both
-        </p>
-      </div>
+          Sign In and Create Account if they sign in with Google. Hidden in
+          iOS PWA mode where Google isn't shown anyway. */}
+      {!isIosPwa() && (
+        <div className="mt-6 flex items-center justify-center gap-2">
+          <GoogleG size={14} />
+          <p
+            className="text-[11px]"
+            style={{ color: "rgba(246,249,251,0.55)" }}
+          >
+            Sign in with Google works for both
+          </p>
+        </div>
+      )}
     </>
   );
 }
