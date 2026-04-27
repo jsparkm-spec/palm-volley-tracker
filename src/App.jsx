@@ -188,6 +188,13 @@ const authApi = {
     authRpc("tracker_revoke_invite", { p_invite_id: inviteId }),
   activeInvite: (groupId) =>
     authRpc("tracker_active_invite", { p_group_id: groupId }),
+
+  // ---- Group creation (auth-aware) ----
+  createGroup: (name, displayName) =>
+    authRpc("tracker_create_group_v2", {
+      p_name: name,
+      p_display_name: displayName || null,
+    }),
 };
 
 // ---------- Helpers ----------
@@ -668,8 +675,12 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
   const [unclaimed, setUnclaimed] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
-  const [intent, setIntent] = useState(null); // 'claim' | 'create'
+  // intent: 'claim' = claim an existing player record in an existing group
+  //         'create' = brand-new player joining an existing group via invite
+  //         'create-group' = creating a brand-new group
+  const [intent, setIntent] = useState(null);
   const [displayName, setDisplayName] = useState("");
+  const [groupName, setGroupName] = useState("");
 
   const lookupGroup = async () => {
     setErr(null);
@@ -734,17 +745,31 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
     }
     setBusy(true);
     try {
-      // Redeem the invite first so the user is a member of the group, then
-      // create their player record on that roster.
-      if (resolvedToken) {
-        await authApi.redeemInvite(resolvedToken);
+      if (intent === "create-group") {
+        // Brand-new group with the user as owner. Atomic on the SQL side.
+        const newGroup = await authApi.createGroup(groupName.trim(), displayName.trim());
+        const g = {
+          id: newGroup.id,
+          name: newGroup.name,
+          code: newGroup.invite_code,
+        };
+        await saveGroupToStorage(g);
+        setGroupCtx(g);
+        setStep("success");
+        setTimeout(() => onComplete(), 800);
+      } else {
+        // Joining an existing group via invite link → redeem first, then create
+        // the player record on that roster.
+        if (resolvedToken) {
+          await authApi.redeemInvite(resolvedToken);
+        }
+        await authApi.createPlayerForSelf(displayName.trim(), groupCtx.id);
+        await saveGroupToStorage(groupCtx);
+        setStep("success");
+        setTimeout(() => onComplete(), 800);
       }
-      await authApi.createPlayerForSelf(displayName.trim(), groupCtx.id);
-      await saveGroupToStorage(groupCtx);
-      setStep("success");
-      setTimeout(() => onComplete(), 800);
     } catch (e) {
-      setErr(e.message || "Couldn't create your player record.");
+      setErr(e.message || "Couldn't finish setting things up.");
     } finally {
       setBusy(false);
     }
@@ -800,6 +825,16 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
                 setStep("enter-code");
               }}
               primary
+            />
+            <div className="h-3" />
+            <ChoiceButton
+              icon={<Plus size={18} />}
+              title="Start a new group"
+              subtitle="Create your own group and invite others"
+              onClick={() => {
+                setIntent("create-group");
+                setStep("enter-group-name");
+              }}
             />
             <div className="h-3" />
             <ChoiceButton
@@ -859,9 +894,34 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
           />
         )}
 
+        {step === "enter-group-name" && (
+          <EnterGroupNameStep
+            groupName={groupName}
+            setGroupName={setGroupName}
+            busy={busy}
+            err={err}
+            onSubmit={() => {
+              setErr(null);
+              if (!groupName.trim()) {
+                setErr("Group name is required.");
+                return;
+              }
+              setStep("create-name");
+            }}
+            onBack={() => {
+              setErr(null);
+              setStep("start");
+            }}
+          />
+        )}
+
         {step === "create-name" && (
           <CreatePlayerStep
-            group={groupCtx}
+            group={
+              intent === "create-group"
+                ? { name: groupName.trim() || "your new group" }
+                : groupCtx
+            }
             displayName={displayName}
             setDisplayName={setDisplayName}
             busy={busy}
@@ -869,7 +929,9 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
             onSubmit={createPlayer}
             onBack={() => {
               setErr(null);
-              setStep(intent === "claim" ? "claim-list" : "enter-code");
+              if (intent === "create-group") setStep("enter-group-name");
+              else if (intent === "claim") setStep("claim-list");
+              else setStep("enter-code");
             }}
           />
         )}
@@ -1048,6 +1110,58 @@ function ClaimListStep({ group, unclaimed, busy, err, onClaim, onCreateInstead, 
           Don't see your name? Create a new player instead →
         </button>
       </div>
+    </div>
+  );
+}
+
+function EnterGroupNameStep({ groupName, setGroupName, busy, err, onSubmit, onBack }) {
+  const inputRef = useRef(null);
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+  return (
+    <div>
+      <button
+        onClick={onBack}
+        className="text-[11px] uppercase tracking-[0.22em] font-bold mb-6 opacity-70"
+      >
+        ← Back
+      </button>
+      <h2 className="text-2xl mb-2 uppercase" style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}>
+        Name your group
+      </h2>
+      <p className="text-sm mb-6" style={{ color: "rgba(246,249,251,0.7)" }}>
+        This is how your group will appear to everyone you invite. You can
+        change it later.
+      </p>
+      <input
+        ref={inputRef}
+        type="text"
+        value={groupName}
+        maxLength={60}
+        onChange={(e) => setGroupName(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && groupName.trim() && onSubmit()}
+        placeholder="e.g. Sunday Doubles"
+        className="w-full px-4 py-3.5 rounded-sm text-base font-semibold outline-none"
+        style={{
+          background: "rgba(255,255,255,0.08)",
+          border: "1px solid rgba(255,255,255,0.18)",
+          color: C.cream,
+        }}
+      />
+      {err && (
+        <div className="text-xs mt-3" style={{ color: C.coral }}>
+          {err}
+        </div>
+      )}
+      <button
+        onClick={onSubmit}
+        disabled={!groupName.trim() || busy}
+        className="w-full mt-6 py-3.5 rounded-sm text-base uppercase tracking-[0.18em] disabled:opacity-40"
+        style={{ background: C.coral, color: C.cream, fontFamily: DISPLAY }}
+      >
+        Continue
+      </button>
     </div>
   );
 }
