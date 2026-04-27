@@ -198,10 +198,45 @@ const authApi = {
 };
 
 // ---------- Helpers ----------
-const todayISO = () => new Date().toISOString().slice(0, 10);
+//
+// All date math is anchored to Pacific Time so the "day boundary" is
+// consistent regardless of where the user physically is. America/Los_Angeles
+// handles PDT/PST switching automatically.
+//
+// Use Intl.DateTimeFormat (rather than naive offset math) so DST transitions
+// don't silently corrupt dates twice a year.
+const APP_TZ = "America/Los_Angeles";
+
+// Returns a YYYY-MM-DD string for "now" in Pacific Time. This is what we
+// store in tracker_games.game_date and use for "today" comparisons.
+const todayISO = () => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const y = parts.find((p) => p.type === "year").value;
+  const m = parts.find((p) => p.type === "month").value;
+  const d = parts.find((p) => p.type === "day").value;
+  return `${y}-${m}-${d}`;
+};
+
+// Formats a YYYY-MM-DD date string for display ("Apr 27, 2026"). The input
+// is already a wall-clock date string from the DB; we render it in en-US
+// without applying timezone math (since YYYY-MM-DD has no time component
+// to shift). Anchoring to Pacific via timeZone is still safe and prevents
+// the next-day-bug on east-coast machines for ISO strings parsed at UTC.
 const fmtDate = (iso) => {
-  const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  if (!iso) return "";
+  // Treat the date as Pacific noon to avoid edge-case rounding around midnight.
+  const d = new Date(`${iso}T12:00:00-08:00`);
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: APP_TZ,
+  });
 };
 
 const mapGame = (g) => ({
