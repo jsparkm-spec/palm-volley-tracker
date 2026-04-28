@@ -253,27 +253,27 @@ const fmtDate = (iso) => {
 };
 
 // ---- Truncated lists ----
-// Shared pattern for "show 5 at a time, expand by 5 on tap." Returns the
+// Shared pattern for "show N at a time, expand by N on tap." Returns the
 // sliced array, the remaining count, and an expand function. Reset by
 // changing the `keyDep` (e.g. a player id) so navigating to a different
-// profile resets the count back to 5.
+// profile resets the count back to the page size.
 const TRUNCATED_PAGE = 5;
 
-function useTruncated(items, keyDep = null) {
-  const [visible, setVisible] = useState(TRUNCATED_PAGE);
+function useTruncated(items, keyDep = null, pageSize = TRUNCATED_PAGE) {
+  const [visible, setVisible] = useState(pageSize);
   // Reset when the key changes — different profile, different list.
   useEffect(() => {
-    setVisible(TRUNCATED_PAGE);
-  }, [keyDep]);
+    setVisible(pageSize);
+  }, [keyDep, pageSize]);
   const total = items.length;
   const sliced = items.slice(0, visible);
   const remaining = Math.max(0, total - visible);
-  const next = Math.min(TRUNCATED_PAGE, remaining);
+  const next = Math.min(pageSize, remaining);
   return {
     sliced,
     remaining,
     next,
-    showMore: () => setVisible((v) => v + TRUNCATED_PAGE),
+    showMore: () => setVisible((v) => v + pageSize),
   };
 }
 
@@ -5156,59 +5156,7 @@ function StatsView({ stats, partnerships, games, players }) {
               No players meet that filter.
             </div>
           ) : (
-            sorted.map((s, idx) => (
-              <div
-                key={s.id}
-                className="px-4 py-2.5 flex items-center gap-3"
-                style={{ borderTop: idx === 0 ? "none" : `1px solid ${C.line}` }}
-              >
-                <div
-                  className="w-7 h-7 rounded-sm flex items-center justify-center text-xs"
-                  style={{
-                    background: idx === 0 ? C.coral : C.cream,
-                    color: idx === 0 ? C.cream : C.muted,
-                    fontFamily: DISPLAY,
-                    border: idx === 0 ? "none" : `1px solid ${C.line}`,
-                  }}
-                >
-                  {idx + 1}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <PlayerName
-                    id={s.id}
-                    name={s.name}
-                    className="font-bold text-[14px] leading-tight truncate block"
-                  />
-                  <div className="text-[11px]" style={{ color: C.muted }}>
-                    {s.games}G · {s.wins}-{s.losses} · {s.diff >= 0 ? "+" : ""}
-                    {s.diff} diff
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div
-                    className="text-lg leading-none"
-                    style={{ fontFamily: DISPLAY, color: C.navy }}
-                  >
-                    {sortKey === "winPct"
-                      ? (s.winPct * 100).toFixed(0) + "%"
-                      : sortKey === "pointsPct"
-                      ? (s.pointsPct * 100).toFixed(1) + "%"
-                      : sortKey === "ppg"
-                      ? s.ppg.toFixed(1)
-                      : s[sortKey]}
-                  </div>
-                  <div className="text-[9px] uppercase tracking-[0.18em] font-bold" style={{ color: C.muted }}>
-                    {sortKey === "winPct"
-                      ? "win rate"
-                      : sortKey === "pointsPct"
-                      ? "pts won"
-                      : sortKey === "ppg"
-                      ? "avg PF"
-                      : sortKey}
-                  </div>
-                </div>
-              </div>
-            ))
+            <LeaderboardList sorted={sorted} sortKey={sortKey} minGames={minGames} />
           )}
         </div>
       </div>
@@ -5693,101 +5641,195 @@ function DailyLeaderboard({ games, players }) {
 // player who's played at least one game. Split into two sub-lists: active
 // win streaks (hot) and active loss streaks (cold). Best streak shown as
 // a small subline under the current.
+// Leaderboard list with truncation. Pulled out so the sortKey/minGames
+// filter changes can reset the visible-count via the keyDep.
+function LeaderboardList({ sorted, sortKey, minGames }) {
+  const { sliced, remaining, next, showMore } = useTruncated(
+    sorted,
+    `${sortKey}|${minGames}`,
+    10
+  );
+  return (
+    <>
+      {sliced.map((s, idx) => (
+        <div
+          key={s.id}
+          className="px-4 py-2.5 flex items-center gap-3"
+          style={{ borderTop: idx === 0 ? "none" : `1px solid ${C.line}` }}
+        >
+          <div
+            className="w-7 h-7 rounded-sm flex items-center justify-center text-xs"
+            style={{
+              background: idx === 0 ? C.coral : C.cream,
+              color: idx === 0 ? C.cream : C.muted,
+              fontFamily: DISPLAY,
+              border: idx === 0 ? "none" : `1px solid ${C.line}`,
+            }}
+          >
+            {idx + 1}
+          </div>
+          <div className="flex-1 min-w-0">
+            <PlayerName
+              id={s.id}
+              name={s.name}
+              className="font-bold text-[14px] leading-tight truncate block"
+            />
+            <div className="text-[11px]" style={{ color: C.muted }}>
+              {s.games}G · {s.wins}-{s.losses} · {s.diff >= 0 ? "+" : ""}
+              {s.diff} diff
+            </div>
+          </div>
+          <div className="text-right">
+            <div
+              className="text-lg leading-none"
+              style={{ fontFamily: DISPLAY, color: C.navy }}
+            >
+              {sortKey === "winPct"
+                ? (s.winPct * 100).toFixed(0) + "%"
+                : sortKey === "pointsPct"
+                ? (s.pointsPct * 100).toFixed(1) + "%"
+                : sortKey === "ppg"
+                ? s.ppg.toFixed(1)
+                : s[sortKey]}
+            </div>
+            <div className="text-[9px] uppercase tracking-[0.18em] font-bold" style={{ color: C.muted }}>
+              {sortKey === "winPct"
+                ? "win rate"
+                : sortKey === "pointsPct"
+                ? "pts won"
+                : sortKey === "ppg"
+                ? "avg PF"
+                : sortKey}
+            </div>
+          </div>
+        </div>
+      ))}
+      {remaining > 0 && (
+        <div className="px-4 py-3" style={{ borderTop: `1px solid ${C.line}` }}>
+          <button
+            onClick={showMore}
+            className="w-full py-2 rounded-sm text-[11px] uppercase tracking-[0.22em] font-bold"
+            style={{
+              background: "transparent",
+              color: C.muted,
+              border: `1px dashed ${C.line}`,
+            }}
+          >
+            Show {next} More ({remaining} left)
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 function HotStreaksSection({ stats }) {
   const active = stats.filter((s) => s.games > 0);
   if (active.length === 0) return null;
 
-  // Hot: players with an active win streak (currentStreak > 0), longest first
-  const hot = active
+  // Find each of the four records. Tiebreakers default to alphabetical name
+  // for stability across re-renders.
+  const cmpName = (a, b) => a.name.localeCompare(b.name);
+
+  // Longest historical win streak (bestWinStreak max)
+  const recordWin = active
+    .filter((s) => s.bestWinStreak > 0)
+    .sort((a, b) => b.bestWinStreak - a.bestWinStreak || cmpName(a, b))[0] || null;
+
+  // Longest active win streak (currentStreak > 0, max)
+  const activeWin = active
     .filter((s) => s.currentStreak > 0)
-    .sort((a, b) => b.currentStreak - a.currentStreak);
-  // Cold: active loss streaks (currentStreak < 0), longest first
-  const cold = active
+    .sort((a, b) => b.currentStreak - a.currentStreak || cmpName(a, b))[0] || null;
+
+  // Longest historical loss streak (bestLossStreak max)
+  const recordLoss = active
+    .filter((s) => s.bestLossStreak > 0)
+    .sort((a, b) => b.bestLossStreak - a.bestLossStreak || cmpName(a, b))[0] || null;
+
+  // Longest active loss streak (currentStreak < 0, most negative)
+  const activeLoss = active
     .filter((s) => s.currentStreak < 0)
-    .sort((a, b) => a.currentStreak - b.currentStreak); // more negative = longer
+    .sort((a, b) => a.currentStreak - b.currentStreak || cmpName(a, b))[0] || null;
 
-  const renderRow = (s) => {
-    const isWin = s.currentStreak > 0;
-    const n = Math.abs(s.currentStreak);
-    const best = isWin ? s.bestWinStreak : s.bestLossStreak;
-    return (
-      <div
-        key={s.id}
-        className="px-4 py-2.5 flex items-center gap-3"
-        style={{ borderTop: `1px solid ${C.line}` }}
-      >
-        <StreakBadge streak={s.currentStreak} />
-        <div className="flex-1 min-w-0">
-          <PlayerName
-            id={s.id}
-            name={s.name}
-            className="font-bold text-[14px] leading-tight truncate block"
-          />
-          <div className="text-[11px]" style={{ color: C.muted }}>
-            Best {isWin ? "win" : "loss"} streak: {best}
-          </div>
-        </div>
-        <div className="text-right">
-          <div
-            className="text-lg leading-none"
-            style={{ fontFamily: DISPLAY, color: isWin ? C.coral : C.muted }}
-          >
-            {n}
-          </div>
-          <div className="text-[9px] uppercase tracking-[0.18em] font-bold" style={{ color: C.muted }}>
-            in a row
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderBlock = (title, icon, iconColor, list, emptyMsg) => (
+  // Render a single card. Holder is the leader; value is the streak length;
+  // accent governs the icon + number color.
+  const Card = ({ icon, label, holder, value, accent }) => (
     <div
       className="rounded-sm overflow-hidden"
       style={{ background: "white", border: `1px solid ${C.line}` }}
     >
       <div
-        className="px-4 py-2.5 flex items-center gap-2"
-        style={{ background: C.cream }}
+        className="px-3 py-2 flex items-center gap-1.5"
+        style={{ background: C.cream, borderBottom: `1px solid ${C.line}` }}
       >
         {icon}
         <span
-          className="text-[11px] uppercase tracking-[0.22em] font-bold"
-          style={{ color: iconColor, fontFamily: BODY }}
+          className="text-[9px] uppercase tracking-[0.2em] font-bold"
+          style={{ color: accent, fontFamily: BODY }}
         >
-          {title}
+          {label}
         </span>
       </div>
-      {list.length === 0 ? (
-        <div className="text-center py-5 text-xs" style={{ color: C.muted }}>
-          {emptyMsg}
+      {holder ? (
+        <div className="px-3 py-3 flex items-center justify-between gap-2">
+          <PlayerName
+            id={holder.id}
+            name={holder.name}
+            className="font-bold text-[13px] truncate"
+          />
+          <div
+            className="text-2xl leading-none shrink-0"
+            style={{ fontFamily: DISPLAY, color: accent }}
+          >
+            {value}
+          </div>
         </div>
       ) : (
-        list.map(renderRow)
+        <div className="px-3 py-4 text-center text-[11px]" style={{ color: C.muted }}>
+          —
+        </div>
       )}
     </div>
   );
 
   return (
-    <div className="space-y-3">
-      <div className="text-[10px] uppercase tracking-[0.22em] font-bold px-1" style={{ color: C.muted }}>
+    <div>
+      <div
+        className="text-[10px] uppercase tracking-[0.22em] font-bold px-1 mb-2"
+        style={{ color: C.muted }}
+      >
         Streaks
       </div>
-      {renderBlock(
-        "On Fire",
-        <Flame size={14} color={C.coral} strokeWidth={2.4} />,
-        C.coral,
-        hot,
-        "No active win streaks."
-      )}
-      {renderBlock(
-        "Ice Cold",
-        <Snowflake size={14} color={C.navy} strokeWidth={2.4} />,
-        C.navy,
-        cold,
-        "No active losing streaks."
-      )}
+      <div className="grid grid-cols-2 gap-2">
+        <Card
+          icon={<Trophy size={11} color={C.coral} strokeWidth={2.4} />}
+          label="Win Streak Record"
+          holder={recordWin}
+          value={recordWin?.bestWinStreak}
+          accent={C.coral}
+        />
+        <Card
+          icon={<Flame size={11} color={C.coral} strokeWidth={2.4} />}
+          label="Active Win Streak"
+          holder={activeWin}
+          value={activeWin?.currentStreak}
+          accent={C.coral}
+        />
+        <Card
+          icon={<Snowflake size={11} color={C.navy} strokeWidth={2.4} />}
+          label="Loss Streak Record"
+          holder={recordLoss}
+          value={recordLoss?.bestLossStreak}
+          accent={C.navy}
+        />
+        <Card
+          icon={<Snowflake size={11} color={C.navy} strokeWidth={2.4} />}
+          label="Active Loss Streak"
+          holder={activeLoss}
+          value={activeLoss ? Math.abs(activeLoss.currentStreak) : null}
+          accent={C.navy}
+        />
+      </div>
     </div>
   );
 }
@@ -5797,13 +5839,16 @@ function PointsWonBoard({ stats }) {
   if (active.length === 0) return null;
   // Sort by pointsPct descending. Ties broken by raw pointsFor so players
   // who've scored more total points edge out players with identical ratios.
-  const sorted = active
-    .slice()
-    .sort((a, b) => b.pointsPct - a.pointsPct || b.pointsFor - a.pointsFor);
+  const sorted = useMemo(
+    () => active.slice().sort((a, b) => b.pointsPct - a.pointsPct || b.pointsFor - a.pointsFor),
+    [active]
+  );
   // Bar scaling: leader's pct = 100% bar width; everyone else proportional.
   // This exaggerates the visual gap between players who are all above 50%,
   // which is the typical range for "points actually won out of possible."
   const topPct = sorted[0].pointsPct || 1;
+
+  const { sliced, remaining, next, showMore } = useTruncated(sorted, "points-won", 10);
 
   return (
     <div
@@ -5835,7 +5880,7 @@ function PointsWonBoard({ stats }) {
         </div>
       </div>
       <div>
-        {sorted.map((s, idx) => {
+        {sliced.map((s, idx) => {
           const pct = s.pointsPct * 100;
           // Bar width relative to the leader so the visual gap reads clearly
           const barPct = (s.pointsPct / topPct) * 100;
@@ -5902,6 +5947,21 @@ function PointsWonBoard({ stats }) {
             </div>
           );
         })}
+        {remaining > 0 && (
+          <div className="px-4 py-3" style={{ borderTop: `1px solid ${C.line}` }}>
+            <button
+              onClick={showMore}
+              className="w-full py-2 rounded-sm text-[11px] uppercase tracking-[0.22em] font-bold"
+              style={{
+                background: "transparent",
+                color: C.muted,
+                border: `1px dashed ${C.line}`,
+              }}
+            >
+              Show {next} More ({remaining} left)
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
