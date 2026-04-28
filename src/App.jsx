@@ -5746,9 +5746,12 @@ function HotStreaksSection({ stats }) {
   const active = stats.filter((s) => s.games > 0);
   if (active.length === 0) return null;
 
-  // Tiebreakers for record streaks: more recent timestamp wins. Falls back
-  // to alphabetical name only when neither has a recorded date (shouldn't
-  // happen in practice but kept defensive).
+  // Tiebreakers vary by card:
+  //   Win Streak Record + Active Win Streak: recency wins (most recent date)
+  //   Loss Streak Record + Active Loss Streak: lower pointsPct wins (the
+  //     worse-performing player gets the dubious honor — feels more
+  //     thematically right than awarding it to whoever lost most recently)
+  //   Final fallback for both: alphabetical name for deterministic ordering.
   const cmpName = (a, b) => a.name.localeCompare(b.name);
   const cmpDate = (aDate, bDate) => {
     if (aDate && bDate) return aDate < bDate ? 1 : aDate > bDate ? -1 : 0;
@@ -5756,6 +5759,8 @@ function HotStreaksSection({ stats }) {
     if (bDate) return 1;
     return 0;
   };
+  // Lower pointsPct wins → ascending sort.
+  const cmpPointsPctAsc = (a, b) => (a.pointsPct ?? 0) - (b.pointsPct ?? 0);
 
   // Longest historical win streak (bestWinStreak max, recency tiebreaker)
   const recordWin = active
@@ -5778,23 +5783,25 @@ function HotStreaksSection({ stats }) {
         cmpName(a, b)
     )[0] || null;
 
-  // Longest historical loss streak (bestLossStreak max, recency tiebreaker)
+  // Longest historical loss streak (bestLossStreak max, lower-pointsPct
+  // tiebreaker — the worse-performing player gets the streak crown).
   const recordLoss = active
     .filter((s) => s.bestLossStreak > 0)
     .sort(
       (a, b) =>
         b.bestLossStreak - a.bestLossStreak ||
-        cmpDate(a.bestLossStreakEndedAt, b.bestLossStreakEndedAt) ||
+        cmpPointsPctAsc(a, b) ||
         cmpName(a, b)
     )[0] || null;
 
-  // Longest active loss streak (currentStreak < 0, most negative)
+  // Longest active loss streak (currentStreak < 0, most negative). Same
+  // points-won-% tiebreaker rationale.
   const activeLoss = active
     .filter((s) => s.currentStreak < 0)
     .sort(
       (a, b) =>
         a.currentStreak - b.currentStreak ||
-        cmpDate(a.lastGameDate, b.lastGameDate) ||
+        cmpPointsPctAsc(a, b) ||
         cmpName(a, b)
     )[0] || null;
 
