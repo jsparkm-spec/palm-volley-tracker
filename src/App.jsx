@@ -31,6 +31,7 @@ import {
   ArrowRight,
   ChevronDown,
   Pencil,
+  Search,
 } from "lucide-react";
 import Logomark from "./components/Logomark";
 import AuthGate from "./components/AuthGate";
@@ -250,6 +251,31 @@ const fmtDate = (iso) => {
     timeZone: APP_TZ,
   });
 };
+
+// ---- Truncated lists ----
+// Shared pattern for "show 5 at a time, expand by 5 on tap." Returns the
+// sliced array, the remaining count, and an expand function. Reset by
+// changing the `keyDep` (e.g. a player id) so navigating to a different
+// profile resets the count back to 5.
+const TRUNCATED_PAGE = 5;
+
+function useTruncated(items, keyDep = null) {
+  const [visible, setVisible] = useState(TRUNCATED_PAGE);
+  // Reset when the key changes — different profile, different list.
+  useEffect(() => {
+    setVisible(TRUNCATED_PAGE);
+  }, [keyDep]);
+  const total = items.length;
+  const sliced = items.slice(0, visible);
+  const remaining = Math.max(0, total - visible);
+  const next = Math.min(TRUNCATED_PAGE, remaining);
+  return {
+    sliced,
+    remaining,
+    next,
+    showMore: () => setVisible((v) => v + TRUNCATED_PAGE),
+  };
+}
 
 const mapGame = (g) => ({
   id: g.id,
@@ -4560,89 +4586,12 @@ function PlayerProfileView({ playerId, players, games, stats, partnerships, onBa
 
           {/* Partnerships */}
           {teammateRecords.length > 0 && (
-            <div>
-              <div
-                className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2 px-1 flex items-center gap-1.5"
-                style={{ color: C.muted }}
-              >
-                <Handshake size={11} /> Partners
-              </div>
-              <div className="space-y-2">
-                {teammateRecords.map((r) => (
-                  <div
-                    key={r.id}
-                    className="rounded-sm px-4 py-2.5 flex items-center justify-between"
-                    style={{ background: "white", border: `1px solid ${C.line}` }}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <PlayerName
-                        id={r.id}
-                        name={r.name}
-                        className="font-bold text-[14px] truncate block"
-                      />
-                      <div className="text-[11px]" style={{ color: C.muted }}>
-                        {r.games} {r.games === 1 ? "game" : "games"} together
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-base" style={{ color: C.navy, fontFamily: DISPLAY }}>
-                        {r.wins}-{r.games - r.wins}
-                      </div>
-                      <div className="text-[10px] font-semibold" style={{ color: C.muted }}>
-                        {(r.winPct * 100).toFixed(0)}%
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <PartnerSection records={teammateRecords} keyDep={playerId} />
           )}
 
           {/* Head-to-head */}
           {opponentRecords.length > 0 && (
-            <div>
-              <div
-                className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2 px-1 flex items-center gap-1.5"
-                style={{ color: C.muted }}
-              >
-                <Swords size={11} /> Head-to-Head
-              </div>
-              <div className="space-y-2">
-                {opponentRecords.map((r) => {
-                  const losses = r.games - r.wins;
-                  const favor = r.wins >= losses;
-                  return (
-                    <div
-                      key={r.id}
-                      className="rounded-sm px-4 py-2.5 flex items-center justify-between"
-                      style={{ background: "white", border: `1px solid ${C.line}` }}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <PlayerName
-                          id={r.id}
-                          name={r.name}
-                          className="font-bold text-[14px] truncate block"
-                        />
-                        <div className="text-[11px]" style={{ color: C.muted }}>
-                          vs this opponent {r.games} {r.games === 1 ? "time" : "times"}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div
-                          className="text-base"
-                          style={{ color: favor ? C.coral : C.muted, fontFamily: DISPLAY }}
-                        >
-                          {r.wins}-{losses}
-                        </div>
-                        <div className="text-[10px] font-semibold" style={{ color: C.muted }}>
-                          {(r.winPct * 100).toFixed(0)}%
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            <OpponentSection records={opponentRecords} keyDep={playerId} />
           )}
         </>
       )}
@@ -4655,6 +4604,101 @@ function PlayerProfileView({ playerId, players, games, stats, partnerships, onBa
 // Fixed-position Back button used exclusively on the Player Profile view.
 // Sits near the bottom of the screen but not flush with the edge, centered,
 // and respects the iOS home-indicator safe area.
+// Partners list on profile — truncated, expandable.
+function PartnerSection({ records, keyDep }) {
+  const { sliced, remaining, next, showMore } = useTruncated(records, keyDep);
+  return (
+    <div>
+      <div
+        className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2 px-1 flex items-center gap-1.5"
+        style={{ color: C.muted }}
+      >
+        <Handshake size={11} /> Partners
+      </div>
+      <div className="space-y-2">
+        {sliced.map((r) => (
+          <div
+            key={r.id}
+            className="rounded-sm px-4 py-2.5 flex items-center justify-between"
+            style={{ background: "white", border: `1px solid ${C.line}` }}
+          >
+            <div className="min-w-0 flex-1">
+              <PlayerName
+                id={r.id}
+                name={r.name}
+                className="font-bold text-[14px] truncate block"
+              />
+              <div className="text-[11px]" style={{ color: C.muted }}>
+                {r.games} {r.games === 1 ? "game" : "games"} together
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-base" style={{ color: C.navy, fontFamily: DISPLAY }}>
+                {r.wins}-{r.games - r.wins}
+              </div>
+              <div className="text-[10px] font-semibold" style={{ color: C.muted }}>
+                {(r.winPct * 100).toFixed(0)}%
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <ShowMoreButton remaining={remaining} next={next} onClick={showMore} />
+    </div>
+  );
+}
+
+// Head-to-head list on profile — truncated, expandable.
+function OpponentSection({ records, keyDep }) {
+  const { sliced, remaining, next, showMore } = useTruncated(records, keyDep);
+  return (
+    <div>
+      <div
+        className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2 px-1 flex items-center gap-1.5"
+        style={{ color: C.muted }}
+      >
+        <Swords size={11} /> Head-to-Head
+      </div>
+      <div className="space-y-2">
+        {sliced.map((r) => {
+          const losses = r.games - r.wins;
+          const favor = r.wins >= losses;
+          return (
+            <div
+              key={r.id}
+              className="rounded-sm px-4 py-2.5 flex items-center justify-between"
+              style={{ background: "white", border: `1px solid ${C.line}` }}
+            >
+              <div className="min-w-0 flex-1">
+                <PlayerName
+                  id={r.id}
+                  name={r.name}
+                  className="font-bold text-[14px] truncate block"
+                />
+                <div className="text-[11px]" style={{ color: C.muted }}>
+                  vs this opponent {r.games} {r.games === 1 ? "time" : "times"}
+                </div>
+              </div>
+              <div className="text-right">
+                <div
+                  className="text-base"
+                  style={{ color: favor ? C.coral : C.muted, fontFamily: DISPLAY }}
+                >
+                  {r.wins}-{losses}
+                </div>
+                <div className="text-[10px] font-semibold" style={{ color: C.muted }}>
+                  {(r.winPct * 100).toFixed(0)}%
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <ShowMoreButton remaining={remaining} next={next} onClick={showMore} />
+    </div>
+  );
+}
+
 function ProfileBackButton({ onBack }) {
   return (
     <div
@@ -5199,44 +5243,7 @@ function StatsView({ stats, partnerships, games, players }) {
       )}
 
       {partnerships.length > 0 && (
-        <div>
-          <div
-            className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2 px-1"
-            style={{ color: C.muted }}
-          >
-            All Partnerships
-          </div>
-          <div className="space-y-2">
-            {partnerships
-              .slice()
-              .sort((a, b) => b.games - a.games)
-              .map((p) => (
-                <div
-                  key={`${p.a}|${p.b}`}
-                  className="rounded-sm px-4 py-2.5 flex items-center justify-between"
-                  style={{ background: "white", border: `1px solid ${C.line}` }}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="font-bold text-sm truncate">
-                      <PlayerName id={p.a} name={p.aName} /> &{" "}
-                      <PlayerName id={p.b} name={p.bName} />
-                    </div>
-                    <div className="text-[11px]" style={{ color: C.muted }}>
-                      {p.games} {p.games === 1 ? "game" : "games"}
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-sm" style={{ color: C.navy, fontFamily: DISPLAY }}>
-                      {p.wins}-{p.games - p.wins}
-                    </div>
-                    <div className="text-[10px] font-semibold" style={{ color: C.muted }}>
-                      {(p.winPct * 100).toFixed(0)}%
-                    </div>
-                  </div>
-                </div>
-              ))}
-          </div>
-        </div>
+        <AllPartnershipsSection partnerships={partnerships} players={players} />
       )}
 
       <div className="rounded-sm p-4" style={{ background: "white", border: `1px solid ${C.line}` }}>
@@ -5250,6 +5257,277 @@ function StatsView({ stats, partnerships, games, players }) {
         <p className="text-[11px] mt-3" style={{ color: C.muted }}>
           CSV files import cleanly into Google Sheets — File → Import → Upload.
         </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------- All Partnerships ----------
+// Truncated list with a "Show More" button + a "Look up a duo" affordance at
+// the top. Each row is also tappable — opens the lookup modal pre-populated
+// with that pair so users can see the same stats in detail (and toggle to a
+// different duo from there if they want).
+function AllPartnershipsSection({ partnerships, players }) {
+  const sorted = useMemo(
+    () => [...partnerships].sort((a, b) => b.games - a.games),
+    [partnerships]
+  );
+  const { sliced, remaining, next, showMore } = useTruncated(sorted, "all-partnerships");
+  // Lookup modal state: null = closed, {a, b} = open with these two preselected.
+  const [lookup, setLookup] = useState(null);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2 px-1">
+        <div
+          className="text-[10px] uppercase tracking-[0.22em] font-bold"
+          style={{ color: C.muted }}
+        >
+          All Partnerships
+        </div>
+        <button
+          onClick={() => setLookup({ a: null, b: null })}
+          className="text-[10px] uppercase tracking-[0.22em] font-bold flex items-center gap-1.5 px-2.5 py-1 rounded-sm"
+          style={{
+            background: C.ice,
+            color: C.navy,
+            border: `1px solid ${C.line}`,
+          }}
+        >
+          <Search size={11} /> Look up a duo
+        </button>
+      </div>
+      <div className="space-y-2">
+        {sliced.map((p) => (
+          <button
+            key={`${p.a}|${p.b}`}
+            onClick={() => setLookup({ a: p.a, b: p.b })}
+            className="w-full text-left rounded-sm px-4 py-2.5 flex items-center justify-between transition-colors active:bg-gray-50"
+            style={{ background: "white", border: `1px solid ${C.line}` }}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="font-bold text-sm truncate">
+                {p.aName} & {p.bName}
+              </div>
+              <div className="text-[11px]" style={{ color: C.muted }}>
+                {p.games} {p.games === 1 ? "game" : "games"}
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-sm" style={{ color: C.navy, fontFamily: DISPLAY }}>
+                {p.wins}-{p.games - p.wins}
+              </div>
+              <div className="text-[10px] font-semibold" style={{ color: C.muted }}>
+                {(p.winPct * 100).toFixed(0)}%
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+      <ShowMoreButton remaining={remaining} next={next} onClick={showMore} />
+
+      {lookup && (
+        <PartnershipLookupModal
+          players={players}
+          partnerships={partnerships}
+          initialA={lookup.a}
+          initialB={lookup.b}
+          onClose={() => setLookup(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------- Partnership Lookup Modal ----------
+// Two player pickers + a result panel showing the duo's record. Pre-populated
+// when opened from a tappable row. Falls back to a friendly "haven't played
+// together yet" message when the pair isn't in the partnerships data.
+function PartnershipLookupModal({ players, partnerships, initialA, initialB, onClose }) {
+  const [a, setA] = useState(initialA);
+  const [b, setB] = useState(initialB);
+
+  // Build a lookup map keyed by both orderings of the pair so order-of-pick
+  // doesn't matter.
+  const partnershipByPair = useMemo(() => {
+    const map = new Map();
+    partnerships.forEach((p) => {
+      map.set(`${p.a}|${p.b}`, p);
+      map.set(`${p.b}|${p.a}`, p);
+    });
+    return map;
+  }, [partnerships]);
+
+  const result = a && b && a !== b ? partnershipByPair.get(`${a}|${b}`) || null : null;
+  const samePicked = a && b && a === b;
+  const namesPicked = a && b && a !== b;
+
+  const aName = players.find((p) => p.id === a)?.name || "";
+  const bName = players.find((p) => p.id === b)?.name || "";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4 py-10"
+      style={{ background: "rgba(13,47,69,0.6)", backdropFilter: "blur(2px)" }}
+      onClick={onClose}
+    >
+      <div
+        className="relative max-w-sm w-full rounded-sm overflow-hidden"
+        style={{
+          background: C.cream,
+          border: `1px solid ${C.line}`,
+          boxShadow: "0 24px 48px -12px rgba(13,47,69,0.4)",
+          maxHeight: "calc(100vh - 5rem)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div
+          className="flex items-center justify-between px-4 py-3"
+          style={{ borderBottom: `1px solid ${C.line}` }}
+        >
+          <div
+            className="text-[10px] uppercase tracking-[0.22em] font-bold"
+            style={{ color: C.muted, fontFamily: BODY }}
+          >
+            Duo Lookup
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-sm flex items-center justify-center"
+            style={{ background: "white", border: `1px solid ${C.line}` }}
+            aria-label="Close lookup"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto px-4 py-4" style={{ maxHeight: "calc(100vh - 12rem)" }}>
+          {/* Player pickers */}
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div>
+              <label
+                className="block text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+                style={{ color: C.muted }}
+              >
+                Player 1
+              </label>
+              <select
+                value={a || ""}
+                onChange={(e) => setA(e.target.value || null)}
+                className="w-full px-3 py-2.5 rounded-sm font-bold"
+                style={{ background: "white", border: `1px solid ${C.line}`, fontSize: "14px" }}
+              >
+                <option value="">Pick…</option>
+                {players.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label
+                className="block text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+                style={{ color: C.muted }}
+              >
+                Player 2
+              </label>
+              <select
+                value={b || ""}
+                onChange={(e) => setB(e.target.value || null)}
+                className="w-full px-3 py-2.5 rounded-sm font-bold"
+                style={{ background: "white", border: `1px solid ${C.line}`, fontSize: "14px" }}
+              >
+                <option value="">Pick…</option>
+                {players.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Result panel */}
+          {!namesPicked && !samePicked && (
+            <div
+              className="rounded-sm p-4 text-center text-xs"
+              style={{ background: "white", border: `1px solid ${C.line}`, color: C.muted }}
+            >
+              Pick two players to see their record as teammates.
+            </div>
+          )}
+          {samePicked && (
+            <div
+              className="rounded-sm p-4 text-center text-xs"
+              style={{
+                background: "rgba(234,78,51,0.08)",
+                border: `1px solid ${C.coral}`,
+                color: C.coralDeep,
+              }}
+            >
+              Pick two different players.
+            </div>
+          )}
+          {namesPicked && !result && (
+            <div
+              className="rounded-sm p-4 text-center"
+              style={{ background: "white", border: `1px solid ${C.line}` }}
+            >
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+                style={{ color: C.muted }}
+              >
+                Never Partnered
+              </div>
+              <div className="text-sm" style={{ color: C.ink }}>
+                <strong>{aName}</strong> and <strong>{bName}</strong> haven't
+                played a game on the same team yet.
+              </div>
+            </div>
+          )}
+          {result && (
+            <div
+              className="rounded-sm p-4"
+              style={{
+                background: `linear-gradient(135deg, ${C.ice} 0%, ${C.cream} 100%)`,
+                border: `1px solid ${C.line}`,
+              }}
+            >
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2 text-center"
+                style={{ color: C.navy }}
+              >
+                {aName} & {bName}
+              </div>
+              <div
+                className="text-center mb-3"
+                style={{ fontFamily: DISPLAY, fontSize: "44px", lineHeight: 1, color: C.navyDeep }}
+              >
+                {result.wins}-{result.games - result.wins}
+              </div>
+              <div
+                className="text-center text-[10px] uppercase tracking-[0.22em] font-bold"
+                style={{ color: C.muted }}
+              >
+                {(result.winPct * 100).toFixed(0)}% Win Rate · {result.games}{" "}
+                {result.games === 1 ? "Game" : "Games"}
+              </div>
+              {/* Optional point-diff line, when present in the data */}
+              {typeof result.pointDiff === "number" && (
+                <div
+                  className="text-center mt-2 text-xs"
+                  style={{ color: result.pointDiff > 0 ? C.coral : result.pointDiff < 0 ? C.muted : C.muted }}
+                >
+                  {result.pointDiff > 0 ? "+" : ""}
+                  {result.pointDiff} pt diff together
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -5695,6 +5973,25 @@ function ExportButton({ onClick, label, variant = "solid" }) {
       }}
     >
       <Download size={14} /> {label}
+    </button>
+  );
+}
+
+// Subtle "show more" button. Shown only when there are more items to reveal.
+// Pairs with the useTruncated hook above.
+function ShowMoreButton({ remaining, next, onClick }) {
+  if (remaining <= 0) return null;
+  return (
+    <button
+      onClick={onClick}
+      className="w-full mt-2 py-2 rounded-sm text-[11px] uppercase tracking-[0.22em] font-bold"
+      style={{
+        background: "transparent",
+        color: C.muted,
+        border: `1px dashed ${C.line}`,
+      }}
+    >
+      Show {next} More ({remaining} left)
     </button>
   );
 }
