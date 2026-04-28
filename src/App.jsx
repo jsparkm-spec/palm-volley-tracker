@@ -138,6 +138,8 @@ async function authRpc(fn, args = {}) {
 
 const authApi = {
   myGroups: () => authRpc("tracker_my_groups"),
+  myGroupsNeedingPlayer: () => authRpc("tracker_my_groups_needing_player"),
+  myPlayerRecord: () => authRpc("tracker_my_player_record"),
   unclaimedPlayersInGroup: (groupId) =>
     authRpc("tracker_unclaimed_players_in_group", { p_group_id: groupId }),
   claimPlayer: (playerId, groupId) =>
@@ -535,6 +537,11 @@ export default function App() {
   // Drives "show picker on fresh login but bypass on simple reload."
   const [freshLogin, setFreshLogin] = useState(false);
 
+  // Groups where the user is an active member but has NO player record on
+  // the roster. Drives the post-login fix flow. Empty array = nothing to fix.
+  // undefined = haven't checked yet for the current memberships state.
+  const [groupsNeedingPlayer, setGroupsNeedingPlayer] = useState(undefined);
+
   // ---- Auth session lifecycle ----
   useEffect(() => {
     let unsub = null;
@@ -578,6 +585,47 @@ export default function App() {
       setFreshLogin(false);
     }
   }, [freshLogin, memberships]);
+
+  // Whenever memberships change, recompute which (if any) groups the user is
+  // a member of without having a player record on the roster. Ensures every
+  // active member ends up with a player record (claimed or freshly created).
+  useEffect(() => {
+    if (!session || memberships === undefined) {
+      setGroupsNeedingPlayer(undefined);
+      return;
+    }
+    if (memberships.filter((m) => m.status === "active").length === 0) {
+      setGroupsNeedingPlayer([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await authApi.myGroupsNeedingPlayer();
+        if (!cancelled) setGroupsNeedingPlayer(rows || []);
+      } catch (e) {
+        console.error("Failed to load groups needing player", e);
+        if (!cancelled) setGroupsNeedingPlayer([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session, memberships]);
+
+  // Helper to refresh the needing-player list (after a successful claim or
+  // create-player call). Used by the fix flow.
+  const refreshGroupsNeedingPlayer = useCallback(async () => {
+    try {
+      const rows = await authApi.myGroupsNeedingPlayer();
+      setGroupsNeedingPlayer(rows || []);
+      return rows || [];
+    } catch (e) {
+      console.error(e);
+      setGroupsNeedingPlayer([]);
+      return [];
+    }
+  }, []);
 
   // ---- Auto-redeem: when signed-in user has a pending token, redeem it ----
   // Runs once memberships have loaded for the current session, so we know
@@ -644,6 +692,37 @@ export default function App() {
 
   const activeMemberships = memberships.filter((m) => m.status === "active");
   const pendingMemberships = memberships.filter((m) => m.status === "pending");
+
+  // Wait for the "do I have a player record everywhere I'm a member?" check
+  // to complete before deciding what to render. Avoids briefly showing the
+  // tracker only to immediately route away to the fix flow.
+  if (activeMemberships.length > 0 && groupsNeedingPlayer === undefined) {
+    return <Splash message="Checking your roster…" />;
+  }
+
+  // If the user is an active member of any group without a player record on
+  // its roster, route them through the fix flow for the first such group.
+  // After that group is fixed, the next render handles the next one (if any).
+  if (groupsNeedingPlayer && groupsNeedingPlayer.length > 0) {
+    const target = groupsNeedingPlayer[0];
+    return (
+      <ClaimOrAddPlayerForGroup
+        target={target}
+        session={session}
+        onComplete={async () => {
+          // After successful claim/create, recheck. If there are more groups
+          // needing fixing, we'll re-render into the next one.
+          await refreshGroupsNeedingPlayer();
+          await refreshMemberships();
+        }}
+        onSignOut={async () => {
+          setMemberships(undefined);
+          setGroupsNeedingPlayer(undefined);
+          await supabase.auth.signOut();
+        }}
+      />
+    );
+  }
 
   // If user has active memberships but tapped "Start a new group" from the
   // switcher, route into ClaimOrJoinFlow to capture the new group's name.
@@ -924,6 +1003,289 @@ function GroupPickerScreen({ memberships, onPick, onCreateGroup, onSignOut }) {
 //
 // All paths terminate by calling onComplete(), which re-fetches memberships
 // in the parent App and routes the user into the tracker.
+// ---------- Claim or Add Player (post-invite fix flow) ----------
+// Shown to a signed-in user who is an active member of a group but has no
+// player record on its roster — typically a new signup who joined via invite
+// link without going through a claim step. Two paths:
+//   1. The group has unclaimed player records → show them as a list. The user
+//      either picks one (claims it) or chooses "Add me as a new player"
+//      (creates a fresh record with their display name).
+//   2. The group has no unclaimed records → silently create a fresh record
+//      using the user's display name and skip the screen entirely.
+function ClaimOrAddPlayerForGroup({ target, session, onComplete, onSignOut }) {
+  // Pull the user's display name from auth metadata. Supabase populates
+  // user_metadata.full_name from Google OAuth, and we set display_name on
+  // email signup. Fall back to the email's local part if neither is set.
+  const md = session?.user?.user_metadata || {};
+  const fallbackName =
+    md.display_name ||
+    md.full_name ||
+    md.name ||
+    (session?.user?.email ? session.user.email.split("@")[0] : "") ||
+    "";
+
+  const [unclaimed, setUnclaimed] = useState(null); // null = loading
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [name, setName] = useState(fallbackName);
+  const [editing, setEditing] = useState(false);
+
+  // On mount: figure out the right path to take.
+  //   1. Does the caller already have a claimed player record anywhere?
+  //      If yes → reuse it (silent: just add to this group's roster). No UI.
+  //   2. No existing record → fetch unclaimed players in target group.
+  //      If any exist → render the screen, let user pick or add new.
+  //      If none exist → silently create a new record with display name.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const existing = await authApi.myPlayerRecord();
+        // Supabase returns either an object (when function returns a record)
+        // or null. Normalize.
+        const hasExistingRecord = !!existing && (existing.id || existing[0]?.id);
+        if (hasExistingRecord) {
+          // Silent: reuse existing record. createPlayerForSelf is idempotent
+          // and will just add to the roster + ensure membership.
+          if (cancelled) return;
+          setBusy(true);
+          await authApi.createPlayerForSelf("", target.group_id);
+          await onComplete();
+          return;
+        }
+
+        const rows = await authApi.unclaimedPlayersInGroup(target.group_id);
+        if (cancelled) return;
+        setUnclaimed(rows || []);
+        if ((rows || []).length === 0) {
+          if (!fallbackName.trim()) {
+            // Edge case: no unclaimed records, no display name in metadata.
+            // Render the screen so the user can type a name. The "are these
+            // you" messaging would be misleading when the list is empty —
+            // but we'll fall through and the empty list + add-as-new prompt
+            // is still actionable.
+            return;
+          }
+          setBusy(true);
+          await authApi.createPlayerForSelf(fallbackName.trim(), target.group_id);
+          await onComplete();
+        }
+      } catch (e) {
+        if (!cancelled) setErr(e.message || "Couldn't set up your roster spot.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target.group_id]);
+
+  const claim = async (playerId) => {
+    setErr(null);
+    setBusy(true);
+    try {
+      await authApi.claimPlayer(playerId, target.group_id);
+      await onComplete();
+    } catch (e) {
+      setErr(e.message || "Couldn't claim that player.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addAsNew = async () => {
+    setErr(null);
+    if (!name.trim()) {
+      setErr("Display name is required.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await authApi.createPlayerForSelf(name.trim(), target.group_id);
+      await onComplete();
+    } catch (e) {
+      setErr(e.message || "Couldn't add you as a new player.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // While the silent-create path is in flight, show a splash. Same for the
+  // very brief load before unclaimed rows arrive.
+  if (unclaimed === null || (unclaimed.length === 0 && busy)) {
+    return <Splash message={`Setting up ${target.name}…`} />;
+  }
+
+  return (
+    <div
+      className="min-h-screen flex flex-col"
+      style={{
+        background: `linear-gradient(160deg, ${C.navy} 0%, ${C.navyDeep} 60%, ${C.ink} 100%)`,
+        color: C.cream,
+        fontFamily: BODY,
+        paddingTop: "max(2rem, calc(env(safe-area-inset-top) + 1rem))",
+        paddingBottom: "max(2rem, calc(env(safe-area-inset-bottom) + 1rem))",
+      }}
+    >
+      <div className="flex-1 flex flex-col justify-center px-6 py-8 max-w-md w-full mx-auto">
+        {/* Brand header */}
+        <div className="flex items-center gap-3 mb-8">
+          <Logomark variant="light" className="w-12 h-12 shrink-0" />
+          <div>
+            <div
+              className="text-[10px] uppercase tracking-[0.28em] font-bold"
+              style={{ color: C.sky }}
+            >
+              {target.name}
+            </div>
+            <div
+              className="text-2xl uppercase leading-none"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+            >
+              Find yourself
+            </div>
+          </div>
+        </div>
+
+        <h1
+          className="text-3xl uppercase leading-[1.05] mb-2"
+          style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+        >
+          Are any of these you?
+        </h1>
+        <p className="text-sm mb-7" style={{ color: "rgba(246,249,251,0.7)" }}>
+          The group has existing player records that nobody's claimed yet. Tap
+          your name to keep your stats from past games. Or add yourself as a
+          new player below.
+        </p>
+
+        {err && (
+          <div
+            className="mb-5 px-3 py-2.5 rounded-sm text-xs"
+            style={{
+              background: "rgba(234,78,51,0.15)",
+              color: "#ffd9d2",
+              border: `1px solid ${C.coral}`,
+            }}
+          >
+            {err}
+          </div>
+        )}
+
+        <div className="space-y-2.5 mb-5">
+          {unclaimed.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => claim(p.id)}
+              disabled={busy}
+              className="w-full text-left p-4 rounded-sm flex items-center gap-3 transition-all active:scale-[0.99] disabled:opacity-60"
+              style={{
+                background: "rgba(255,255,255,0.06)",
+                border: "1px solid rgba(255,255,255,0.12)",
+                color: C.cream,
+              }}
+            >
+              <div className="flex-1 min-w-0">
+                <div
+                  className="font-bold text-base uppercase truncate"
+                  style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+                >
+                  {p.name}
+                </div>
+                <div
+                  className="text-[10px] uppercase tracking-[0.22em] font-bold mt-1"
+                  style={{ color: "rgba(246,249,251,0.55)" }}
+                >
+                  Unclaimed
+                </div>
+              </div>
+              <ArrowRight size={16} color={C.sky} />
+            </button>
+          ))}
+        </div>
+
+        {/* Add me as new — pre-filled with display name from auth metadata,
+            tap to edit before submitting. */}
+        <div
+          className="rounded-sm p-4 mb-4"
+          style={{
+            background: "rgba(96,192,226,0.08)",
+            border: "1px dashed rgba(96,192,226,0.4)",
+          }}
+        >
+          <div
+            className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2"
+            style={{ color: C.sky }}
+          >
+            None of these are me
+          </div>
+          {editing ? (
+            <input
+              type="text"
+              value={name}
+              maxLength={60}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={() => setEditing(false)}
+              autoFocus
+              className="w-full px-3 py-2.5 rounded-sm mb-3"
+              style={{
+                background: "rgba(255,255,255,0.08)",
+                border: "1px solid rgba(255,255,255,0.18)",
+                color: C.cream,
+                fontSize: "16px",
+                fontWeight: 600,
+              }}
+            />
+          ) : (
+            <button
+              onClick={() => setEditing(true)}
+              className="w-full text-left px-3 py-2.5 rounded-sm mb-3 flex items-center justify-between"
+              style={{
+                background: "rgba(255,255,255,0.06)",
+                border: "1px solid rgba(255,255,255,0.18)",
+                color: C.cream,
+                fontSize: "16px",
+                fontWeight: 600,
+              }}
+            >
+              <span className="truncate">{name || "Tap to enter your name"}</span>
+              <Pencil size={13} color={C.sky} />
+            </button>
+          )}
+          <button
+            onClick={addAsNew}
+            disabled={busy || !name.trim()}
+            className="w-full py-3 rounded-sm uppercase tracking-[0.18em] flex items-center justify-center gap-2 disabled:opacity-50"
+            style={{
+              background: C.coral,
+              color: C.cream,
+              fontFamily: DISPLAY,
+              fontSize: "13px",
+            }}
+          >
+            <Plus size={14} strokeWidth={2.6} /> Add me as a new player
+          </button>
+        </div>
+
+        {/* Sign-out escape hatch in case the user signed in to the wrong
+            account or wants to back out. */}
+        <div
+          className="mt-4 pt-5 text-center"
+          style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}
+        >
+          <button
+            onClick={onSignOut}
+            className="text-[11px] uppercase tracking-[0.22em] font-bold"
+            style={{ color: "rgba(246,249,251,0.45)" }}
+          >
+            Sign out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCancel }) {
   // forcedIntent ('create-group') skips the start screen entirely. Used when
   // an already-member user taps "Start a new group" from the group switcher.
