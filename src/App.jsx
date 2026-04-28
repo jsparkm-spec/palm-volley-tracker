@@ -543,18 +543,39 @@ export default function App() {
   const [groupsNeedingPlayer, setGroupsNeedingPlayer] = useState(undefined);
 
   // ---- Auth session lifecycle ----
+  // Track whether this tab has ever seen a non-null session. Supabase fires
+  // SIGNED_IN both for genuine fresh sign-ins AND when the tab regains focus
+  // (a quirk of how it re-checks session validity on visibilitychange). We
+  // only want to treat it as a "fresh login" the FIRST time we see a session
+  // in this tab — subsequent SIGNED_IN events while a session already exists
+  // are silent refreshes, not real logins.
+  const hadSessionRef = useRef(false);
+
   useEffect(() => {
     let unsub = null;
     (async () => {
       const { data } = await supabase.auth.getSession();
       setSession(data.session ?? null);
+      if (data.session) hadSessionRef.current = true;
       const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
-        setSession(newSession ?? null);
-        setMemberships(newSession ? undefined : []);
-        // Differentiate fresh sign-in from reload-with-existing-session.
-        // SIGNED_IN fires on credential submission. INITIAL_SESSION fires on
-        // page load when an existing session is restored from localStorage.
-        if (event === "SIGNED_IN") setFreshLogin(true);
+        // If we already had a session and we're getting another non-null one,
+        // it's a refresh / re-focus — don't churn membership state.
+        const isRefresh =
+          hadSessionRef.current && newSession && event !== "SIGNED_OUT";
+
+        if (!isRefresh) {
+          setSession(newSession ?? null);
+          setMemberships(newSession ? undefined : []);
+        }
+
+        // Track that we've had a session for the next event.
+        if (newSession) hadSessionRef.current = true;
+        if (event === "SIGNED_OUT") hadSessionRef.current = false;
+
+        // Only treat SIGNED_IN as a fresh login if it's the FIRST session
+        // we've seen in this tab. Re-emitted SIGNED_IN events from tab
+        // re-focus would otherwise force the picker every time.
+        if (event === "SIGNED_IN" && !isRefresh) setFreshLogin(true);
         if (event === "SIGNED_OUT") setFreshLogin(false);
       });
       unsub = sub?.subscription;
