@@ -30,6 +30,7 @@ import {
   Zap,
   ArrowRight,
   ChevronDown,
+  Pencil,
 } from "lucide-react";
 import Logomark from "./components/Logomark";
 import AuthGate from "./components/AuthGate";
@@ -177,6 +178,14 @@ const authApi = {
     }),
   deleteGame: (groupId, gameId) =>
     authRpc("tracker_delete_game_v2", { p_group_id: groupId, p_game_id: gameId }),
+  updateGame: (gameId, fields) =>
+    authRpc("tracker_update_game_v2", {
+      p_game_id: gameId,
+      p_date: fields.date,
+      p_score1: fields.score1,
+      p_score2: fields.score2,
+      p_note: fields.note ?? null,
+    }),
 
   // ---- Step 5: invite links ----
   createInvite: (groupId) =>
@@ -250,6 +259,7 @@ const mapGame = (g) => ({
   score2: g.score2,
   note: g.note,
   createdAt: g.created_at,
+  createdBy: g.created_by || null,
 });
 
 const GROUP_STORAGE_KEY = "tracker:group:v3";
@@ -1961,6 +1971,8 @@ function TrackerApp({
         listGames: () => authApi.listGames(group.id),
         addGame: async (game) => firstRow(await authApi.addGame(group.id, game)),
         deleteGame: (gameId) => authApi.deleteGame(group.id, gameId),
+        updateGame: async (gameId, fields) =>
+          firstRow(await authApi.updateGame(gameId, fields)),
       };
     }
     return {
@@ -1970,6 +1982,11 @@ function TrackerApp({
       listGames: () => api.listGames(group.code),
       addGame: async (game) => firstRow(await api.addGame(group.code, game)),
       deleteGame: (gameId) => api.deleteGame(group.code, gameId),
+      // Legacy code-only path doesn't support edits — surface a clear error
+      // rather than silently failing.
+      updateGame: () => {
+        throw new Error("Editing games requires signing in.");
+      },
     };
   }, [isAuthedMember, group.id, group.code]);
 
@@ -2066,6 +2083,40 @@ function TrackerApp({
     }
   };
 
+  // Edit-game modal state — null when closed, else the game being edited.
+  const [editingGame, setEditingGame] = useState(null);
+
+  const saveEditedGame = async ({ date, score1, score2, note }) => {
+    if (!editingGame) return false;
+    if (score1 === score2) {
+      flash("Scores can't be tied");
+      return false;
+    }
+    const id = editingGame.id;
+    const snapshot = games;
+    // Optimistic update — mutate the row in-place so the UI reflects
+    // immediately. Roll back on error.
+    setGames((prev) =>
+      prev.map((g) =>
+        g.id === id ? { ...g, date, score1, score2, note: note || null } : g
+      )
+    );
+    try {
+      const row = await dataApi.updateGame(id, { date, score1, score2, note });
+      if (row) {
+        setGames((prev) => prev.map((g) => (g.id === id ? mapGame(row) : g)));
+      }
+      flash("Game updated");
+      setEditingGame(null);
+      return true;
+    } catch (err) {
+      console.error(err);
+      setGames(snapshot);
+      flash(err.message || "Couldn't save changes");
+      return false;
+    }
+  };
+
   const stats = useMemo(() => computeStats(players, games), [players, games]);
   const partnerships = useMemo(() => computePartnerships(players, games), [players, games]);
 
@@ -2117,7 +2168,18 @@ function TrackerApp({
               {view === "play" && (
                 <PlayView players={players} onAddGame={addGame} onGoToPlayers={() => setView("players")} />
               )}
-              {view === "games" && <GamesView games={games} players={players} onRemove={removeGame} />}
+              {view === "games" && (
+                <GamesView
+                  games={games}
+                  players={players}
+                  onRemove={removeGame}
+                  onEdit={(g) => setEditingGame(g)}
+                  currentUserId={session?.user?.id || null}
+                  isOwner={(memberships || []).some(
+                    (m) => m.group_id === group.id && m.role === "owner" && m.status === "active"
+                  )}
+                />
+              )}
               {view === "players" && (
                 <PlayersView players={players} stats={stats} onAdd={addPlayer} onRemove={removePlayer} />
               )}
@@ -2180,6 +2242,15 @@ function TrackerApp({
               setSwitcherOpen(false);
               onCreateGroup?.();
             }}
+          />
+        )}
+
+        {editingGame && (
+          <EditGameModal
+            game={editingGame}
+            players={players}
+            onSave={saveEditedGame}
+            onClose={() => setEditingGame(null)}
           />
         )}
       </div>
@@ -3301,10 +3372,266 @@ function PlayersView({ players, stats, onAdd, onRemove }) {
 }
 
 // ---------- Games View ----------
-function GamesView({ games, players, onRemove }) {
+// ---------- Edit Game Modal ----------
+// Lightweight modal for editing scores, date, and note on an already-logged
+// game. Players, teams, and mode are not editable in v1 (rare to need, would
+// essentially be re-entry). Permissions enforced server-side; the UI only
+// shows the edit affordance to users who can edit (owner or creator).
+function EditGameModal({ game, players, onSave, onClose }) {
+  const nameOf = (id) => players.find((p) => p.id === id)?.name || "(removed)";
+  const [date, setDate] = useState(game.date);
+  const [score1, setScore1] = useState(String(game.score1));
+  const [score2, setScore2] = useState(String(game.score2));
+  const [note, setNote] = useState(game.note || "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const submit = async () => {
+    setErr(null);
+    const s1 = parseInt(score1, 10);
+    const s2 = parseInt(score2, 10);
+    if (!Number.isFinite(s1) || !Number.isFinite(s2) || s1 < 0 || s2 < 0) {
+      setErr("Both scores must be 0 or higher.");
+      return;
+    }
+    if (s1 === s2) {
+      setErr("Scores can't be tied.");
+      return;
+    }
+    setBusy(true);
+    const ok = await onSave({ date, score1: s1, score2: s2, note: note.trim() });
+    setBusy(false);
+    if (!ok) {
+      // Error message was flashed via toast — leave the modal open so the
+      // user can fix and retry rather than losing their entries.
+    }
+  };
+
+  const t1Won = parseInt(score1, 10) > parseInt(score2, 10);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4 py-10"
+      style={{ background: "rgba(13,47,69,0.6)", backdropFilter: "blur(2px)" }}
+      onClick={onClose}
+    >
+      <div
+        className="relative max-w-sm w-full rounded-sm overflow-hidden"
+        style={{
+          background: C.cream,
+          border: `1px solid ${C.line}`,
+          boxShadow: "0 24px 48px -12px rgba(13,47,69,0.4)",
+          maxHeight: "calc(100vh - 5rem)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div
+          className="flex items-center justify-between px-4 py-3"
+          style={{ borderBottom: `1px solid ${C.line}` }}
+        >
+          <div
+            className="text-[10px] uppercase tracking-[0.22em] font-bold"
+            style={{ color: C.muted, fontFamily: BODY }}
+          >
+            Edit Game
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-sm flex items-center justify-center"
+            style={{ background: "white", border: `1px solid ${C.line}` }}
+            aria-label="Close edit"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div
+          className="overflow-y-auto px-4 py-4"
+          style={{ maxHeight: "calc(100vh - 12rem)" }}
+        >
+          {/* Date */}
+          <label
+            className="block text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+            style={{ color: C.muted }}
+          >
+            Date
+          </label>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="w-full px-3 py-2.5 rounded-sm mb-4"
+            style={{
+              background: "white",
+              border: `1px solid ${C.line}`,
+              fontFamily: BODY,
+              fontSize: "15px",
+            }}
+          />
+
+          {/* Mode + teams (read-only — not editable in v1) */}
+          <div
+            className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2"
+            style={{ color: C.muted }}
+          >
+            {game.mode} — Players
+          </div>
+          <div
+            className="rounded-sm p-3 mb-4 grid grid-cols-[1fr_auto_1fr] gap-3 items-center"
+            style={{ background: "white", border: `1px solid ${C.line}` }}
+          >
+            <div className="text-left">
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+                style={{ color: t1Won ? C.coral : C.muted }}
+              >
+                Team 1
+              </div>
+              {game.team1.map((id) => (
+                <div key={id} className="text-sm font-bold truncate">
+                  {nameOf(id)}
+                </div>
+              ))}
+            </div>
+            <div
+              className="text-[10px] uppercase tracking-[0.22em]"
+              style={{ color: C.muted, fontFamily: DISPLAY }}
+            >
+              vs
+            </div>
+            <div className="text-right">
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+                style={{ color: !t1Won ? C.coral : C.muted }}
+              >
+                Team 2
+              </div>
+              {game.team2.map((id) => (
+                <div key={id} className="text-sm font-bold truncate">
+                  {nameOf(id)}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Scores */}
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div>
+              <label
+                className="block text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+                style={{ color: C.muted }}
+              >
+                Team 1 Score
+              </label>
+              <input
+                type="number"
+                inputMode="numeric"
+                min="0"
+                value={score1}
+                onChange={(e) => setScore1(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-sm text-center"
+                style={{
+                  background: "white",
+                  border: `1px solid ${C.line}`,
+                  fontFamily: DISPLAY,
+                  fontSize: "22px",
+                }}
+              />
+            </div>
+            <div>
+              <label
+                className="block text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+                style={{ color: C.muted }}
+              >
+                Team 2 Score
+              </label>
+              <input
+                type="number"
+                inputMode="numeric"
+                min="0"
+                value={score2}
+                onChange={(e) => setScore2(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-sm text-center"
+                style={{
+                  background: "white",
+                  border: `1px solid ${C.line}`,
+                  fontFamily: DISPLAY,
+                  fontSize: "22px",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Note */}
+          <label
+            className="block text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+            style={{ color: C.muted }}
+          >
+            Note (optional)
+          </label>
+          <input
+            type="text"
+            value={note}
+            maxLength={140}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Anything memorable about the match"
+            className="w-full px-3 py-2.5 rounded-sm mb-2"
+            style={{
+              background: "white",
+              border: `1px solid ${C.line}`,
+              fontFamily: BODY,
+              fontSize: "15px",
+            }}
+          />
+
+          {err && (
+            <div className="text-xs mt-3" style={{ color: C.coralDeep }}>
+              {err}
+            </div>
+          )}
+        </div>
+
+        {/* Footer actions */}
+        <div
+          className="grid grid-cols-2 gap-2 p-3"
+          style={{ borderTop: `1px solid ${C.line}`, background: C.cream }}
+        >
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="py-3 rounded-sm text-sm font-bold disabled:opacity-50"
+            style={{ background: "white", color: C.muted, border: `1px solid ${C.line}` }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy}
+            className="py-3 rounded-sm text-sm font-bold disabled:opacity-50"
+            style={{ background: C.coral, color: C.cream }}
+          >
+            {busy ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GamesView({ games, players, onRemove, onEdit, currentUserId, isOwner }) {
   const nameOf = (id) => players.find((p) => p.id === id)?.name || "(removed)";
   const today = todayISO();
   const todaysGames = games.filter((g) => g.date === today);
+
+  // Edit permission per game: owner, OR creator, OR (legacy game with no
+  // createdBy) the owner only. Falls back to owner-only when client doesn't
+  // know who's signed in.
+  const canEdit = (g) => {
+    if (!currentUserId) return false;
+    if (isOwner) return true;
+    return !!g.createdBy && g.createdBy === currentUserId;
+  };
 
   if (games.length === 0) {
     return (
@@ -3326,6 +3653,7 @@ function GamesView({ games, players, onRemove }) {
       </div>
       {games.map((g) => {
         const t1Won = g.score1 > g.score2;
+        const editable = canEdit(g);
         return (
           <div
             key={g.id}
@@ -3347,14 +3675,28 @@ function GamesView({ games, players, onRemove }) {
                   {fmtDate(g.date)}
                 </span>
               </div>
-              <button
-                onClick={() => onRemove(g.id)}
-                className="w-7 h-7 rounded-sm flex items-center justify-center"
-                style={{ color: C.muted }}
-                aria-label="Delete game"
-              >
-                <Trash2 size={13} />
-              </button>
+              <div className="flex items-center gap-1">
+                {editable && (
+                  <button
+                    onClick={() => onEdit(g)}
+                    className="w-7 h-7 rounded-sm flex items-center justify-center"
+                    style={{ color: C.muted }}
+                    aria-label="Edit game"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                )}
+                {editable && (
+                  <button
+                    onClick={() => onRemove(g.id)}
+                    className="w-7 h-7 rounded-sm flex items-center justify-center"
+                    style={{ color: C.muted }}
+                    aria-label="Delete game"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
+              </div>
             </div>
             <div className="p-4 grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
               <TeamResult teamPlayers={g.team1.map((id) => ({ id, name: nameOf(id) }))} score={g.score1} won={t1Won} side="left" />
