@@ -520,15 +520,25 @@ export default function App() {
     }
   }, []);
 
+  // True for the duration of a fresh sign-in flow — set when Supabase fires
+  // SIGNED_IN, cleared after the picker has been shown (or on sign-out).
+  // Drives "show picker on fresh login but bypass on simple reload."
+  const [freshLogin, setFreshLogin] = useState(false);
+
   // ---- Auth session lifecycle ----
   useEffect(() => {
     let unsub = null;
     (async () => {
       const { data } = await supabase.auth.getSession();
       setSession(data.session ?? null);
-      const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
         setSession(newSession ?? null);
         setMemberships(newSession ? undefined : []);
+        // Differentiate fresh sign-in from reload-with-existing-session.
+        // SIGNED_IN fires on credential submission. INITIAL_SESSION fires on
+        // page load when an existing session is restored from localStorage.
+        if (event === "SIGNED_IN") setFreshLogin(true);
+        if (event === "SIGNED_OUT") setFreshLogin(false);
       });
       unsub = sub?.subscription;
     })();
@@ -545,6 +555,19 @@ export default function App() {
       setMemberships(undefined);
     }
   }, [session, refreshMemberships]);
+
+  // Clear the fresh-login flag once the user has memberships AND only one
+  // active group (no picker possible). Prevents the flag from sticking around
+  // and forcing a picker on a future reload — which would surprise users.
+  useEffect(() => {
+    if (
+      freshLogin &&
+      memberships !== undefined &&
+      memberships.filter((m) => m.status === "active").length <= 1
+    ) {
+      setFreshLogin(false);
+    }
+  }, [freshLogin, memberships]);
 
   // ---- Auto-redeem: when signed-in user has a pending token, redeem it ----
   // Runs once memberships have loaded for the current session, so we know
@@ -642,6 +665,48 @@ export default function App() {
       redeemedGroup;
     const fromSaved =
       group && activeMemberships.find((m) => m.group_id === group.id) && group;
+
+    // Multi-group + fresh login → show picker. Bypasses if:
+    //   (a) only one group (nothing to pick),
+    //   (b) user just redeemed an invite (intent already expressed),
+    //   (c) reload-with-existing-session AND the saved group is valid.
+    const shouldShowPicker =
+      activeMemberships.length > 1 &&
+      !fromRedeem &&
+      (freshLogin || !fromSaved);
+
+    if (shouldShowPicker) {
+      return (
+        <GroupPickerScreen
+          memberships={activeMemberships}
+          onPick={async (m) => {
+            const g = {
+              id: m.group_id,
+              name: m.name,
+              code: m.invite_code,
+            };
+            setGroup(g);
+            await saveGroupToStorage(g);
+            setFreshLogin(false);
+          }}
+          onCreateGroup={() => {
+            setFreshLogin(false);
+            setIsCreatingNewGroup(true);
+          }}
+          onSignOut={async () => {
+            await clearGroupFromStorage();
+            setGroup(null);
+            setMemberships(undefined);
+            setRedeemedGroup(null);
+            setRedeemedToken(null);
+            setPendingInviteToken(null);
+            setFreshLogin(false);
+            await supabase.auth.signOut();
+          }}
+        />
+      );
+    }
+
     const chosen =
       fromRedeem ||
       fromSaved || {
@@ -722,6 +787,121 @@ function Splash({ message }) {
   );
 }
 
+
+// ---------- Group Picker Screen ----------
+// Full-screen post-login picker for users in multiple groups. Shown only on
+// fresh login (Supabase SIGNED_IN event) — same-session reloads bypass via
+// the saved-group fast path. Each group is a stacked rectangular button;
+// "+ Start a new group" sits at the bottom for users who want to create
+// another group instead of picking an existing one.
+function GroupPickerScreen({ memberships, onPick, onCreateGroup, onSignOut }) {
+  return (
+    <div
+      className="min-h-screen flex flex-col"
+      style={{
+        background: `linear-gradient(160deg, ${C.navy} 0%, ${C.navyDeep} 60%, ${C.ink} 100%)`,
+        color: C.cream,
+        fontFamily: BODY,
+        paddingTop: "max(2rem, calc(env(safe-area-inset-top) + 1rem))",
+        paddingBottom: "max(2rem, calc(env(safe-area-inset-bottom) + 1rem))",
+      }}
+    >
+      <div className="flex-1 flex flex-col justify-center px-6 py-8 max-w-md w-full mx-auto">
+        {/* Brand header */}
+        <div className="flex items-center gap-3 mb-8">
+          <Logomark variant="light" className="w-12 h-12 shrink-0" />
+          <div>
+            <div
+              className="text-[10px] uppercase tracking-[0.28em] font-bold"
+              style={{ color: C.sky }}
+            >
+              Palm Volley Pickle
+            </div>
+            <div
+              className="text-2xl uppercase leading-none"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+            >
+              Court Report
+            </div>
+          </div>
+        </div>
+
+        <h1
+          className="text-3xl uppercase leading-[1.05] mb-2"
+          style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+        >
+          Pick your group
+        </h1>
+        <p className="text-sm mb-7" style={{ color: "rgba(246,249,251,0.7)" }}>
+          You're a member of {memberships.length} groups. Tap which one you
+          want to look at.
+        </p>
+
+        <div className="space-y-2.5">
+          {memberships.map((m) => (
+            <button
+              key={m.group_id}
+              onClick={() => onPick(m)}
+              className="w-full text-left p-4 rounded-sm flex items-center gap-3 transition-all active:scale-[0.99]"
+              style={{
+                background: "rgba(255,255,255,0.06)",
+                border: "1px solid rgba(255,255,255,0.12)",
+                color: C.cream,
+              }}
+            >
+              <div className="flex-1 min-w-0">
+                <div
+                  className="font-bold text-base uppercase truncate"
+                  style={{
+                    fontFamily: DISPLAY,
+                    letterSpacing: "0.02em",
+                  }}
+                >
+                  {m.name}
+                </div>
+                <div
+                  className="text-[10px] uppercase tracking-[0.22em] font-bold mt-1"
+                  style={{ color: m.role === "owner" ? C.coral : "rgba(246,249,251,0.55)" }}
+                >
+                  {m.role === "owner" ? "Owner" : "Member"}
+                </div>
+              </div>
+              <ArrowRight size={16} color={C.sky} />
+            </button>
+          ))}
+        </div>
+
+        {/* Create another group affordance — same pattern as the switcher modal. */}
+        <button
+          onClick={onCreateGroup}
+          className="w-full mt-4 py-3 rounded-sm flex items-center justify-center gap-2 text-sm font-bold"
+          style={{
+            background: "transparent",
+            color: C.cream,
+            border: "1px dashed rgba(246,249,251,0.3)",
+          }}
+        >
+          <Plus size={14} strokeWidth={2.6} /> Start a new group
+        </button>
+
+        {/* Signing out from the picker is a useful escape hatch in case the
+            user signed in to the wrong account. */}
+        <div
+          className="mt-8 pt-5 text-center"
+          style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}
+        >
+          <button
+            onClick={onSignOut}
+            className="text-[11px] uppercase tracking-[0.22em] font-bold"
+            style={{ color: "rgba(246,249,251,0.45)" }}
+          >
+            Sign out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ---------- Claim / Join Flow ----------
 //
