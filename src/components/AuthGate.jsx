@@ -279,64 +279,45 @@ export default function AuthGate({ invitedTo = null }) {
                 : "Sign in to log games and see your stats."}
             </p>
 
-            {/* Google — primary action. Hidden in iOS PWA mode where it
-                breaks out of the standalone shell and corrupts the session. */}
-            {!isIosPwa() && (
-              <>
-                <button
-                  onClick={handleGoogle}
-                  disabled={busy}
-                  className="w-full flex items-center justify-center gap-3 py-3.5 rounded-sm transition-all active:scale-[0.99] disabled:opacity-50"
-                  style={{
-                    background: C.cream,
-                    color: C.ink,
-                    fontFamily: BODY,
-                    fontWeight: 700,
-                    fontSize: "15px",
-                  }}
-                >
-                  <GoogleG size={18} /> Continue with Google
-                </button>
-                <div className="flex justify-center mt-2">
-                  <span
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] uppercase tracking-[0.2em] font-bold"
-                    style={{ background: "rgba(96,192,226,0.18)", color: C.sky }}
-                  >
-                    <Sparkles size={10} /> Fastest way to sign in
-                  </span>
-                </div>
-
-                {/* Divider */}
-                <div className="flex items-center gap-3 my-6">
-                  <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.15)" }} />
-                  <span
-                    className="text-[10px] uppercase tracking-[0.22em] font-bold"
-                    style={{ color: "rgba(246,249,251,0.55)" }}
-                  >
-                    Or continue with email
-                  </span>
-                  <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.15)" }} />
-                </div>
-              </>
-            )}
-
-            {/* iOS PWA hint — clarifies for Google-signup users why Google
-                isn't here, and points them to magic link as the easy path. */}
-            {isIosPwa() && mode === "login" && (
-              <div
-                className="mb-5 px-3 py-2.5 rounded-sm text-xs"
-                style={{
-                  background: "rgba(96,192,226,0.12)",
-                  color: "rgba(246,249,251,0.85)",
-                  border: "1px solid rgba(96,192,226,0.4)",
-                  lineHeight: 1.45,
-                }}
+            {/* Google — primary action. Always shown. We previously hid this
+                in iOS PWA mode due to OAuth-breaks-out-of-standalone issues,
+                but the magic-link fallback ended up worse (link opens in
+                Safari, leaves the PWA signed-out). Google works in current
+                iOS, so it's back. */}
+            <button
+              onClick={handleGoogle}
+              disabled={busy}
+              className="w-full flex items-center justify-center gap-3 py-3.5 rounded-sm transition-all active:scale-[0.99] disabled:opacity-50"
+              style={{
+                background: C.cream,
+                color: C.ink,
+                fontFamily: BODY,
+                fontWeight: 700,
+                fontSize: "15px",
+              }}
+            >
+              <GoogleG size={18} /> Continue with Google
+            </button>
+            <div className="flex justify-center mt-2">
+              <span
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] uppercase tracking-[0.2em] font-bold"
+                style={{ background: "rgba(96,192,226,0.18)", color: C.sky }}
               >
-                <strong style={{ color: C.sky }}>From the saved app:</strong>{" "}
-                use your email + password, or tap "Email me a sign-in link" below
-                if you signed up with Google.
-              </div>
-            )}
+                <Sparkles size={10} /> Fastest way to sign in
+              </span>
+            </div>
+
+            {/* Divider */}
+            <div className="flex items-center gap-3 my-6">
+              <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.15)" }} />
+              <span
+                className="text-[10px] uppercase tracking-[0.22em] font-bold"
+                style={{ color: "rgba(246,249,251,0.55)" }}
+              >
+                Or continue with email
+              </span>
+              <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.15)" }} />
+            </div>
 
             {/* Email form */}
             {mode === "signup" && (
@@ -525,19 +506,16 @@ function WelcomeScreen({ invitedTo, onSignIn, onSignUp }) {
 
       {/* Tertiary helper line. Tells users that Google works either way so
           they don't worry they have to make a "wrong" choice between
-          Sign In and Create Account if they sign in with Google. Hidden in
-          iOS PWA mode where Google isn't shown anyway. */}
-      {!isIosPwa() && (
-        <div className="mt-6 flex items-center justify-center gap-2">
-          <GoogleG size={14} />
-          <p
-            className="text-[11px]"
-            style={{ color: "rgba(246,249,251,0.55)" }}
-          >
-            Sign in with Google works for both
-          </p>
-        </div>
-      )}
+          Sign In and Create Account if they sign in with Google. */}
+      <div className="mt-6 flex items-center justify-center gap-2">
+        <GoogleG size={14} />
+        <p
+          className="text-[11px]"
+          style={{ color: "rgba(246,249,251,0.55)" }}
+        >
+          Sign in with Google works for both
+        </p>
+      </div>
     </>
   );
 }
