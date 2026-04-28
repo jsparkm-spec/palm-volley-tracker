@@ -376,10 +376,17 @@ function computeStats(players, games, { trackStreaks = true } = {}) {
       //   currentStreak: positive = active win streak length, negative = loss streak
       //   bestWinStreak: longest win streak ever (positive int)
       //   bestLossStreak: longest loss streak ever (positive int)
+      //   bestWinStreakEndedAt / bestLossStreakEndedAt: date of the last game
+      //     in the best-of-each streak — used as tiebreakers (recency wins)
+      //   lastGameDate: date of the most recent game played — used as
+      //     tiebreaker for active streak records
       //   _run: internal accumulator (stripped at the end)
       currentStreak: 0,
       bestWinStreak: 0,
       bestLossStreak: 0,
+      bestWinStreakEndedAt: null,
+      bestLossStreakEndedAt: null,
+      lastGameDate: null,
       _run: 0,
     };
   });
@@ -408,16 +415,28 @@ function computeStats(players, games, { trackStreaks = true } = {}) {
       s.pointsFor += teamScore;
       s.pointsAgainst += oppScore;
       s.pointsPossible += cap;
+      // Track most-recent game date for active-streak tiebreakers. Games
+      // are processed chronologically, so the last write wins.
+      s.lastGameDate = g.date;
 
       if (trackStreaks) {
         // Extend the current run if the outcome matches its sign, otherwise reset.
         // _run is positive for an active win streak, negative for a loss streak.
         if (won) {
           s._run = s._run > 0 ? s._run + 1 : 1;
-          if (s._run > s.bestWinStreak) s.bestWinStreak = s._run;
+          // Update best win streak if we've matched or extended it. We use
+          // >= (not just >) so the "ended at" timestamp gets refreshed on
+          // ties — the more recent occurrence of the same length wins.
+          if (s._run >= s.bestWinStreak) {
+            s.bestWinStreak = s._run;
+            s.bestWinStreakEndedAt = g.date;
+          }
         } else {
           s._run = s._run < 0 ? s._run - 1 : -1;
-          if (-s._run > s.bestLossStreak) s.bestLossStreak = -s._run;
+          if (-s._run >= s.bestLossStreak) {
+            s.bestLossStreak = -s._run;
+            s.bestLossStreakEndedAt = g.date;
+          }
         }
       }
     };
@@ -5727,29 +5746,57 @@ function HotStreaksSection({ stats }) {
   const active = stats.filter((s) => s.games > 0);
   if (active.length === 0) return null;
 
-  // Find each of the four records. Tiebreakers default to alphabetical name
-  // for stability across re-renders.
+  // Tiebreakers for record streaks: more recent timestamp wins. Falls back
+  // to alphabetical name only when neither has a recorded date (shouldn't
+  // happen in practice but kept defensive).
   const cmpName = (a, b) => a.name.localeCompare(b.name);
+  const cmpDate = (aDate, bDate) => {
+    if (aDate && bDate) return aDate < bDate ? 1 : aDate > bDate ? -1 : 0;
+    if (aDate) return -1;
+    if (bDate) return 1;
+    return 0;
+  };
 
-  // Longest historical win streak (bestWinStreak max)
+  // Longest historical win streak (bestWinStreak max, recency tiebreaker)
   const recordWin = active
     .filter((s) => s.bestWinStreak > 0)
-    .sort((a, b) => b.bestWinStreak - a.bestWinStreak || cmpName(a, b))[0] || null;
+    .sort(
+      (a, b) =>
+        b.bestWinStreak - a.bestWinStreak ||
+        cmpDate(a.bestWinStreakEndedAt, b.bestWinStreakEndedAt) ||
+        cmpName(a, b)
+    )[0] || null;
 
-  // Longest active win streak (currentStreak > 0, max)
+  // Longest active win streak (currentStreak > 0, max). Tiebreak on whose
+  // most recent game is newest — that player's streak is the most "live."
   const activeWin = active
     .filter((s) => s.currentStreak > 0)
-    .sort((a, b) => b.currentStreak - a.currentStreak || cmpName(a, b))[0] || null;
+    .sort(
+      (a, b) =>
+        b.currentStreak - a.currentStreak ||
+        cmpDate(a.lastGameDate, b.lastGameDate) ||
+        cmpName(a, b)
+    )[0] || null;
 
-  // Longest historical loss streak (bestLossStreak max)
+  // Longest historical loss streak (bestLossStreak max, recency tiebreaker)
   const recordLoss = active
     .filter((s) => s.bestLossStreak > 0)
-    .sort((a, b) => b.bestLossStreak - a.bestLossStreak || cmpName(a, b))[0] || null;
+    .sort(
+      (a, b) =>
+        b.bestLossStreak - a.bestLossStreak ||
+        cmpDate(a.bestLossStreakEndedAt, b.bestLossStreakEndedAt) ||
+        cmpName(a, b)
+    )[0] || null;
 
   // Longest active loss streak (currentStreak < 0, most negative)
   const activeLoss = active
     .filter((s) => s.currentStreak < 0)
-    .sort((a, b) => a.currentStreak - b.currentStreak || cmpName(a, b))[0] || null;
+    .sort(
+      (a, b) =>
+        a.currentStreak - b.currentStreak ||
+        cmpDate(a.lastGameDate, b.lastGameDate) ||
+        cmpName(a, b)
+    )[0] || null;
 
   // Render a single card. Holder is the leader; value is the streak length;
   // accent governs the icon + number color.
