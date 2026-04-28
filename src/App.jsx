@@ -29,6 +29,7 @@ import {
   Medal,
   Zap,
   ArrowRight,
+  ChevronDown,
 } from "lucide-react";
 import Logomark from "./components/Logomark";
 import AuthGate from "./components/AuthGate";
@@ -471,6 +472,10 @@ export default function App() {
   const [session, setSession] = useState(undefined);
   // memberships: undefined = loading, [] = none, [{...}] = list
   const [memberships, setMemberships] = useState(undefined);
+  // When true, an existing-member user has tapped "Start a new group" from
+  // the switcher and is being routed through the create-group flow. Resets
+  // when the flow completes or is cancelled.
+  const [isCreatingNewGroup, setIsCreatingNewGroup] = useState(false);
 
   // ---- Invite link state ----
   // The token currently being processed (either fresh from URL on this load,
@@ -607,6 +612,28 @@ export default function App() {
   const activeMemberships = memberships.filter((m) => m.status === "active");
   const pendingMemberships = memberships.filter((m) => m.status === "pending");
 
+  // If user has active memberships but tapped "Start a new group" from the
+  // switcher, route into ClaimOrJoinFlow to capture the new group's name.
+  // The existing user already has a player record claimed, so the SQL
+  // tracker_create_group_v2 will reuse it (no new player created).
+  if (activeMemberships.length > 0 && isCreatingNewGroup) {
+    return (
+      <ClaimOrJoinFlow
+        session={session}
+        forcedIntent="create-group"
+        onComplete={async () => {
+          setIsCreatingNewGroup(false);
+          await refreshMemberships();
+        }}
+        onCancel={() => setIsCreatingNewGroup(false)}
+        onSignOut={async () => {
+          setMemberships(undefined);
+          await supabase.auth.signOut();
+        }}
+      />
+    );
+  }
+
   // Active memberships → tracker. Prefer redeemed group, then saved, then most recent.
   if (activeMemberships.length > 0) {
     const fromRedeem =
@@ -642,6 +669,11 @@ export default function App() {
           await supabase.auth.signOut();
         }}
         onMembershipsChanged={refreshMemberships}
+        onSwitchGroup={async (g) => {
+          setGroup(g);
+          await saveGroupToStorage(g);
+        }}
+        onCreateGroup={() => setIsCreatingNewGroup(true)}
       />
     );
   }
@@ -702,8 +734,11 @@ function Splash({ message }) {
 //
 // All paths terminate by calling onComplete(), which re-fetches memberships
 // in the parent App and routes the user into the tracker.
-function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
-  const [step, setStep] = useState("start");
+function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCancel }) {
+  // forcedIntent ('create-group') skips the start screen entirely. Used when
+  // an already-member user taps "Start a new group" from the group switcher.
+  const initialStep = forcedIntent === "create-group" ? "enter-group-name" : "start";
+  const [step, setStep] = useState(initialStep);
   const [code, setCode] = useState("");
   const [groupCtx, setGroupCtx] = useState(null); // { id, name, code }
   const [resolvedToken, setResolvedToken] = useState(null); // invite token for groupCtx
@@ -713,7 +748,7 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
   // intent: 'claim' = claim an existing player record in an existing group
   //         'create' = brand-new player joining an existing group via invite
   //         'create-group' = creating a brand-new group
-  const [intent, setIntent] = useState(null);
+  const [intent, setIntent] = useState(forcedIntent || null);
   const [displayName, setDisplayName] = useState("");
   const [groupName, setGroupName] = useState("");
 
@@ -935,17 +970,45 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut }) {
             setGroupName={setGroupName}
             busy={busy}
             err={err}
-            onSubmit={() => {
+            onSubmit={async () => {
               setErr(null);
               if (!groupName.trim()) {
                 setErr("Group name is required.");
+                return;
+              }
+              // Forced flow (existing member creating an additional group):
+              // the user already has a claimed player record, so we skip the
+              // display-name step. The SQL reuses the existing player when
+                // p_display_name is null.
+              if (forcedIntent === "create-group") {
+                setBusy(true);
+                try {
+                  const newGroup = await authApi.createGroup(groupName.trim(), null);
+                  const g = {
+                    id: newGroup.id,
+                    name: newGroup.name,
+                    code: newGroup.invite_code,
+                  };
+                  await saveGroupToStorage(g);
+                  setGroupCtx(g);
+                  setStep("success");
+                  setTimeout(() => onComplete(), 800);
+                } catch (e) {
+                  setErr(e.message || "Couldn't create the group.");
+                } finally {
+                  setBusy(false);
+                }
                 return;
               }
               setStep("create-name");
             }}
             onBack={() => {
               setErr(null);
-              setStep("start");
+              if (forcedIntent === "create-group") {
+                onCancel?.();
+              } else {
+                setStep("start");
+              }
             }}
           />
         )}
@@ -1656,6 +1719,8 @@ function TrackerApp({
   onLeaveGroup,
   onSignOut,
   onMembershipsChanged,
+  onSwitchGroup,
+  onCreateGroup,
 }) {
   const [players, setPlayers] = useState([]);
   const [games, setGames] = useState([]);
@@ -1668,6 +1733,14 @@ function TrackerApp({
   const [online, setOnline] = useState(true);
   const [toast, setToast] = useState(null);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
+  // Group switcher modal — only meaningful when user has 2+ active memberships.
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+
+  // Active memberships (excluding pending) drive the switcher's visibility.
+  const activeMemberships = useMemo(
+    () => (memberships || []).filter((m) => m.status === "active"),
+    [memberships]
+  );
 
   // Memoized so the context value reference is stable across renders —
   // prevents unnecessary re-renders of consumers.
@@ -1837,6 +1910,8 @@ function TrackerApp({
             syncing={syncing}
             onRefresh={refresh}
             onOpenSettings={() => setGroupModalOpen(true)}
+            activeMembershipsCount={activeMemberships.length}
+            onOpenSwitcher={() => setSwitcherOpen(true)}
           />
         )}
 
@@ -1900,6 +1975,31 @@ function TrackerApp({
               await onSignOut();
             }}
             onMembershipsChanged={onMembershipsChanged}
+            onCreateGroup={() => {
+              setGroupModalOpen(false);
+              onCreateGroup?.();
+            }}
+          />
+        )}
+
+        {switcherOpen && (
+          <GroupSwitcherModal
+            currentGroupId={group.id}
+            memberships={activeMemberships}
+            onClose={() => setSwitcherOpen(false)}
+            onPick={(membership) => {
+              setSwitcherOpen(false);
+              if (membership.group_id === group.id) return; // already here
+              onSwitchGroup?.({
+                id: membership.group_id,
+                name: membership.name,
+                code: membership.invite_code,
+              });
+            }}
+            onCreateGroup={() => {
+              setSwitcherOpen(false);
+              onCreateGroup?.();
+            }}
           />
         )}
       </div>
@@ -1908,7 +2008,17 @@ function TrackerApp({
 }
 
 // ---------- Header ----------
-function Header({ group, online, syncing, onRefresh, onOpenSettings }) {
+function Header({
+  group,
+  online,
+  syncing,
+  onRefresh,
+  onOpenSettings,
+  activeMembershipsCount = 1,
+  onOpenSwitcher,
+}) {
+  // Multi-group users get a dedicated switcher affordance on the group-name row.
+  const showSwitcher = activeMembershipsCount > 1;
   return (
     <header
       className="px-5 pb-6 relative overflow-hidden"
@@ -1918,9 +2028,6 @@ function Header({ group, online, syncing, onRefresh, onOpenSettings }) {
         borderBottomLeftRadius: "4px",
         borderBottomRightRadius: "4px",
         boxShadow: "0 8px 24px -12px rgba(13,47,69,0.5)",
-        // Respect iOS/Android safe area so the status bar notch doesn't
-        // overlap the logo. Falls back to 2rem (32px) on browsers without
-        // env() support.
         paddingTop: "max(2rem, calc(env(safe-area-inset-top) + 1rem))",
       }}
     >
@@ -1934,24 +2041,39 @@ function Header({ group, online, syncing, onRefresh, onOpenSettings }) {
         }}
       />
       <div className="relative max-w-xl mx-auto flex items-center justify-between gap-3">
-        <button
-          onClick={onOpenSettings}
-          className="text-left flex items-center gap-3 min-w-0 flex-1"
-          aria-label="Group info"
-        >
+        <div className="flex items-center gap-3 min-w-0 flex-1">
           <Logomark variant="dark" className="w-11 h-11 shrink-0" />
           <div className="min-w-0">
-            <div
-              className="text-[10px] uppercase tracking-[0.22em] font-bold flex items-center gap-1.5"
-              style={{ color: C.sky, fontFamily: BODY }}
-            >
-              <span className="truncate">{group.name}</span>
-              {online ? (
-                <Cloud size={11} color={C.sky} />
-              ) : (
-                <CloudOff size={11} color={C.coral} />
-              )}
-            </div>
+            {/* Group name eyebrow — becomes a switcher trigger for multi-group
+                users. For single-group users it's just non-interactive text. */}
+            {showSwitcher ? (
+              <button
+                onClick={onOpenSwitcher}
+                className="text-[10px] uppercase tracking-[0.22em] font-bold flex items-center gap-1.5 max-w-full transition-opacity active:opacity-70"
+                style={{ color: C.sky, fontFamily: BODY }}
+                aria-label="Switch group"
+              >
+                <span className="truncate">{group.name}</span>
+                {online ? (
+                  <Cloud size={11} color={C.sky} />
+                ) : (
+                  <CloudOff size={11} color={C.coral} />
+                )}
+                <ChevronDown size={12} color={C.sky} strokeWidth={2.6} />
+              </button>
+            ) : (
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-bold flex items-center gap-1.5"
+                style={{ color: C.sky, fontFamily: BODY }}
+              >
+                <span className="truncate">{group.name}</span>
+                {online ? (
+                  <Cloud size={11} color={C.sky} />
+                ) : (
+                  <CloudOff size={11} color={C.coral} />
+                )}
+              </div>
+            )}
             <h1
               className="text-2xl leading-none mt-1 uppercase truncate"
               style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
@@ -1959,7 +2081,7 @@ function Header({ group, online, syncing, onRefresh, onOpenSettings }) {
               Court Report
             </h1>
           </div>
-        </button>
+        </div>
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={onRefresh}
@@ -1984,8 +2106,120 @@ function Header({ group, online, syncing, onRefresh, onOpenSettings }) {
   );
 }
 
+// ---------- Group Switcher Modal ----------
+// Centered modal that lets multi-group users pick which group to view.
+// Includes a "+ Start a new group" affordance at the bottom for users who
+// want to create another group while already in one.
+function GroupSwitcherModal({ currentGroupId, memberships, onClose, onPick, onCreateGroup }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4 py-10"
+      style={{ background: "rgba(13,47,69,0.6)", backdropFilter: "blur(2px)" }}
+      onClick={onClose}
+    >
+      <div
+        className="relative max-w-sm w-full rounded-sm overflow-hidden"
+        style={{
+          background: C.cream,
+          border: `1px solid ${C.line}`,
+          boxShadow: "0 24px 48px -12px rgba(13,47,69,0.4)",
+          maxHeight: "calc(100vh - 5rem)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div
+          className="flex items-center justify-between px-4 py-3"
+          style={{ borderBottom: `1px solid ${C.line}` }}
+        >
+          <div
+            className="text-[10px] uppercase tracking-[0.22em] font-bold"
+            style={{ color: C.muted, fontFamily: BODY }}
+          >
+            Switch Group
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-sm flex items-center justify-center"
+            style={{ background: "white", border: `1px solid ${C.line}` }}
+            aria-label="Close switcher"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Group list — scrolls if many groups */}
+        <div className="overflow-y-auto" style={{ maxHeight: "calc(100vh - 18rem)" }}>
+          {memberships.map((m) => {
+            const isCurrent = m.group_id === currentGroupId;
+            const isOwner = m.role === "owner";
+            return (
+              <button
+                key={m.group_id}
+                onClick={() => onPick(m)}
+                className="w-full text-left px-4 py-3 flex items-center gap-3 transition-colors active:bg-gray-50"
+                style={{
+                  borderBottom: `1px solid ${C.line}`,
+                  background: isCurrent ? "rgba(234,78,51,0.06)" : "white",
+                }}
+              >
+                <div className="flex-1 min-w-0">
+                  <div
+                    className="font-bold text-[15px] uppercase truncate"
+                    style={{
+                      fontFamily: DISPLAY,
+                      letterSpacing: "0.02em",
+                      color: C.ink,
+                    }}
+                  >
+                    {m.name}
+                  </div>
+                  <div
+                    className="text-[10px] uppercase tracking-[0.22em] font-bold mt-0.5"
+                    style={{ color: isOwner ? C.coral : C.muted }}
+                  >
+                    {isOwner ? "Owner" : "Member"}
+                  </div>
+                </div>
+                {isCurrent ? (
+                  <div
+                    className="text-[10px] uppercase tracking-[0.18em] font-bold px-2 py-1 rounded-sm shrink-0"
+                    style={{ background: C.coral, color: C.cream, fontFamily: BODY }}
+                  >
+                    Current
+                  </div>
+                ) : (
+                  <ArrowRight size={16} color={C.muted} />
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Create-new-group footer action */}
+        <div
+          className="px-4 py-3"
+          style={{ background: C.cream, borderTop: `1px solid ${C.line}` }}
+        >
+          <button
+            onClick={onCreateGroup}
+            className="w-full py-3 rounded-sm flex items-center justify-center gap-2 text-sm font-bold transition-all active:scale-[0.99]"
+            style={{
+              background: "white",
+              color: C.ink,
+              border: `1px solid ${C.line}`,
+            }}
+          >
+            <Plus size={14} strokeWidth={2.6} /> Start a new group
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Group Modal ----------
-function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, onMembershipsChanged }) {
+function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, onMembershipsChanged, onCreateGroup }) {
   // Owner detection: check this user's membership in this specific group.
   const myMembership = (memberships || []).find((m) => m.group_id === group.id);
   const isOwner = myMembership?.role === "owner";
@@ -2360,6 +2594,17 @@ function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, 
               </div>
             )}
           </div>
+        )}
+
+        {/* Create another group — only meaningful for authenticated users. */}
+        {session?.user && onCreateGroup && (
+          <button
+            onClick={onCreateGroup}
+            className="w-full py-3 mb-2 rounded-sm flex items-center justify-center gap-2 text-sm font-bold"
+            style={{ background: "white", color: C.ink, border: `1px solid ${C.line}` }}
+          >
+            <Plus size={14} strokeWidth={2.6} /> Start a new group
+          </button>
         )}
 
         <button
