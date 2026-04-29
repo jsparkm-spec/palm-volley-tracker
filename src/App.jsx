@@ -458,6 +458,119 @@ function computeStats(players, games, { trackStreaks = true } = {}) {
   });
 }
 
+// ---------- ELO Ratings ----------
+// Computes singles and doubles ELO ratings for every player by replaying
+// all games chronologically. Two ratings tracked separately — a singles
+// game only updates singles ratings, doubles only doubles. Players who
+// haven't played a given mode have null rating + 0 games for that mode.
+//
+// Math:
+//   expected = 1 / (1 + 10^((oppRating - myRating) / 400))
+//   actual   = 1 if won else 0
+//   marginMult = log2(margin + 1) — pickleball margins range 1..11+
+//   K = 40 while player has < 15 games in that mode, else 20
+//   ratingChange = K × marginMult × (actual - expected)
+//
+// For doubles, the team's "rating" is the average of its two players; the
+// rating change is applied equally to both players on the team. This
+// dampens the impact when a strong + weak player partner up: winning
+// gives less credit than expected (because they were "supposed to" win),
+// losing costs more.
+//
+// History is tracked per player per mode: each entry records the date,
+// the post-game rating, the change applied, and the game id (so we can
+// render rating changes next to each game in the games list).
+const ELO_INITIAL = 1500;
+const ELO_K_NEW = 40;
+const ELO_K_ESTABLISHED = 20;
+const ELO_ESTABLISHED_THRESHOLD = 15;
+
+function computeRatings(players, games) {
+  const byId = {};
+  players.forEach((p) => {
+    byId[p.id] = {
+      id: p.id,
+      name: p.name,
+      singlesRating: ELO_INITIAL,
+      singlesGames: 0,
+      singlesHistory: [],
+      doublesRating: ELO_INITIAL,
+      doublesGames: 0,
+      doublesHistory: [],
+    };
+  });
+
+  // Replay games oldest → newest. Same chronological sort used by computeStats.
+  const chronological = games
+    .slice()
+    .sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      const ac = a.createdAt || "";
+      const bc = b.createdAt || "";
+      return ac < bc ? -1 : ac > bc ? 1 : 0;
+    });
+
+  chronological.forEach((g) => {
+    const isSingles = g.mode === "singles";
+    const ratingKey = isSingles ? "singlesRating" : "doublesRating";
+    const gamesKey = isSingles ? "singlesGames" : "doublesGames";
+    const historyKey = isSingles ? "singlesHistory" : "doublesHistory";
+
+    const team1Players = g.team1.map((id) => byId[id]).filter(Boolean);
+    const team2Players = g.team2.map((id) => byId[id]).filter(Boolean);
+    if (team1Players.length === 0 || team2Players.length === 0) return;
+
+    const team1Rating =
+      team1Players.reduce((sum, p) => sum + p[ratingKey], 0) / team1Players.length;
+    const team2Rating =
+      team2Players.reduce((sum, p) => sum + p[ratingKey], 0) / team2Players.length;
+
+    const team1Won = g.score1 > g.score2;
+    const margin = Math.abs(g.score1 - g.score2);
+    const marginMult = Math.log2(Math.max(1, margin) + 1);
+
+    const expected1 = 1 / (1 + Math.pow(10, (team2Rating - team1Rating) / 400));
+    const expected2 = 1 - expected1;
+    const actual1 = team1Won ? 1 : 0;
+    const actual2 = team1Won ? 0 : 1;
+
+    // Apply rating change to each player on each team. K-factor is per-player
+    // based on their game count BEFORE this game (true to "K decreases as
+    // experience grows").
+    const applyTeam = (teamPlayers, expected, actual) => {
+      teamPlayers.forEach((p) => {
+        const k = p[gamesKey] < ELO_ESTABLISHED_THRESHOLD ? ELO_K_NEW : ELO_K_ESTABLISHED;
+        const change = k * marginMult * (actual - expected);
+        p[ratingKey] = p[ratingKey] + change;
+        p[gamesKey] = p[gamesKey] + 1;
+        p[historyKey].push({
+          date: g.date,
+          gameId: g.id,
+          rating: p[ratingKey],
+          change,
+        });
+      });
+    };
+
+    applyTeam(team1Players, expected1, actual1);
+    applyTeam(team2Players, expected2, actual2);
+  });
+
+  // Round ratings to integers for display, and replace 1500 default with null
+  // for modes the player has never played (so we don't show 1500 next to a
+  // player who's never played singles).
+  return Object.values(byId).map((p) => ({
+    id: p.id,
+    name: p.name,
+    singlesRating: p.singlesGames > 0 ? Math.round(p.singlesRating) : null,
+    singlesGames: p.singlesGames,
+    singlesHistory: p.singlesHistory,
+    doublesRating: p.doublesGames > 0 ? Math.round(p.doublesRating) : null,
+    doublesGames: p.doublesGames,
+    doublesHistory: p.doublesHistory,
+  }));
+}
+
 function computePartnerships(players, games) {
   const map = {};
   const nameOf = (id) => players.find((p) => p.id === id)?.name || "—";
@@ -512,6 +625,23 @@ function compareBySortKey(sortKey) {
         if (b.ppg !== a.ppg) return b.ppg - a.ppg;
         if (b.diff !== a.diff) return b.diff - a.diff;
         return b.games - a.games;
+      case "singlesRating": {
+        // Players who haven't played singles get null and sort to the bottom.
+        const ar = a.singlesRating, br = b.singlesRating;
+        if (ar == null && br == null) return b.diff - a.diff;
+        if (ar == null) return 1;
+        if (br == null) return -1;
+        if (br !== ar) return br - ar;
+        return b.singlesGames - a.singlesGames;
+      }
+      case "doublesRating": {
+        const ar = a.doublesRating, br = b.doublesRating;
+        if (ar == null && br == null) return b.diff - a.diff;
+        if (ar == null) return 1;
+        if (br == null) return -1;
+        if (br !== ar) return br - ar;
+        return b.doublesGames - a.doublesGames;
+      }
       default:
         return (b[sortKey] ?? 0) - (a[sortKey] ?? 0);
     }
@@ -2547,6 +2677,12 @@ function TrackerApp({
 
   const stats = useMemo(() => computeStats(players, games), [players, games]);
   const partnerships = useMemo(() => computePartnerships(players, games), [players, games]);
+  const ratings = useMemo(() => computeRatings(players, games), [players, games]);
+  const ratingsById = useMemo(() => {
+    const map = {};
+    ratings.forEach((r) => { map[r.id] = r; });
+    return map;
+  }, [ratings]);
 
   return (
     <ProfileNavContext.Provider value={profileNav}>
@@ -2589,6 +2725,7 @@ function TrackerApp({
               games={games}
               stats={stats}
               partnerships={partnerships}
+              ratingsById={ratingsById}
               onBack={() => setSelectedPlayerId(null)}
             />
           ) : (
@@ -2606,13 +2743,14 @@ function TrackerApp({
                   isOwner={(memberships || []).some(
                     (m) => m.group_id === group.id && m.role === "owner" && m.status === "active"
                   )}
+                  ratingsById={ratingsById}
                 />
               )}
               {view === "players" && (
                 <PlayersView players={players} stats={stats} onAdd={addPlayer} onRemove={removePlayer} />
               )}
               {view === "stats" && (
-                <StatsView stats={stats} partnerships={partnerships} games={games} players={players} />
+                <StatsView stats={stats} partnerships={partnerships} games={games} players={players} ratingsById={ratingsById} />
               )}
             </>
           )}
@@ -4047,10 +4185,34 @@ function EditGameModal({ game, players, onSave, onClose }) {
   );
 }
 
-function GamesView({ games, players, onRemove, onEdit, currentUserId, isOwner }) {
+function GamesView({ games, players, onRemove, onEdit, currentUserId, isOwner, ratingsById = {} }) {
   const nameOf = (id) => players.find((p) => p.id === id)?.name || "(removed)";
   const today = todayISO();
   const todaysGames = games.filter((g) => g.date === today);
+
+  // Build a per-game lookup of team rating changes. The change is the same
+  // for every player on a team, so we just look at the first player's
+  // history entry for this gameId.
+  const ratingChangesByGameId = useMemo(() => {
+    const map = {};
+    games.forEach((g) => {
+      const isSingles = g.mode === "singles";
+      const historyKey = isSingles ? "singlesHistory" : "doublesHistory";
+      const t1pid = g.team1[0];
+      const t2pid = g.team2[0];
+      const t1History = ratingsById[t1pid]?.[historyKey] || [];
+      const t2History = ratingsById[t2pid]?.[historyKey] || [];
+      const t1Entry = t1History.find((h) => h.gameId === g.id);
+      const t2Entry = t2History.find((h) => h.gameId === g.id);
+      if (t1Entry && t2Entry) {
+        map[g.id] = {
+          team1: Math.round(t1Entry.change),
+          team2: Math.round(t2Entry.change),
+        };
+      }
+    });
+    return map;
+  }, [games, ratingsById]);
 
   // Edit permission per game: owner, OR creator, OR (legacy game with no
   // createdBy) the owner only. Falls back to owner-only when client doesn't
@@ -4127,14 +4289,26 @@ function GamesView({ games, players, onRemove, onEdit, currentUserId, isOwner })
               </div>
             </div>
             <div className="p-4 grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
-              <TeamResult teamPlayers={g.team1.map((id) => ({ id, name: nameOf(id) }))} score={g.score1} won={t1Won} side="left" />
+              <TeamResult
+                teamPlayers={g.team1.map((id) => ({ id, name: nameOf(id) }))}
+                score={g.score1}
+                won={t1Won}
+                side="left"
+                ratingChange={ratingChangesByGameId[g.id]?.team1}
+              />
               <div
                 className="text-[10px] uppercase tracking-[0.25em]"
                 style={{ color: C.muted, fontFamily: DISPLAY }}
               >
                 vs
               </div>
-              <TeamResult teamPlayers={g.team2.map((id) => ({ id, name: nameOf(id) }))} score={g.score2} won={!t1Won} side="right" />
+              <TeamResult
+                teamPlayers={g.team2.map((id) => ({ id, name: nameOf(id) }))}
+                score={g.score2}
+                won={!t1Won}
+                side="right"
+                ratingChange={ratingChangesByGameId[g.id]?.team2}
+              />
             </div>
             {g.note && (
               <div
@@ -4151,7 +4325,9 @@ function GamesView({ games, players, onRemove, onEdit, currentUserId, isOwner })
   );
 }
 
-function TeamResult({ teamPlayers, score, won, side }) {
+function TeamResult({ teamPlayers, score, won, side, ratingChange }) {
+  const showRating = typeof ratingChange === "number";
+  const positive = ratingChange > 0;
   return (
     <div style={{ textAlign: side === "left" ? "left" : "right" }}>
       <div
@@ -4181,6 +4357,15 @@ function TeamResult({ teamPlayers, score, won, side }) {
       >
         {score}
       </div>
+      {showRating && ratingChange !== 0 && (
+        <div
+          className="text-[10px] uppercase tracking-[0.18em] font-bold mt-0.5"
+          style={{ color: positive ? C.coral : C.muted }}
+        >
+          {positive ? "+" : ""}
+          {ratingChange} ELO
+        </div>
+      )}
     </div>
   );
 }
@@ -4284,9 +4469,10 @@ function TodaysGamesCard({ games, players }) {
 // Full-screen profile replacing the current view. Header has back button + avatar.
 // Sections: hero metrics, point trend chart, recent games (last 10),
 // partnerships breakdown, head-to-head records.
-function PlayerProfileView({ playerId, players, games, stats, partnerships, onBack }) {
+function PlayerProfileView({ playerId, players, games, stats, partnerships, ratingsById = {}, onBack }) {
   const player = players.find((p) => p.id === playerId);
   const playerStats = stats.find((s) => s.id === playerId);
+  const playerRating = ratingsById[playerId] || null;
 
   // All games this player appeared in, chronological (oldest → newest) for charting.
   // Each enriched with computed pov (team/opponent/scores/outcome) for render.
@@ -4516,6 +4702,69 @@ function PlayerProfileView({ playerId, players, games, stats, partnerships, onBa
               accent={C.muted}
             />
           </div>
+
+          {/* ELO Ratings — separate card. Shows whichever modes the player
+              has actually played; "—" when none. */}
+          {playerRating && (playerRating.singlesGames > 0 || playerRating.doublesGames > 0) && (
+            <div
+              className="rounded-sm overflow-hidden"
+              style={{ background: "white", border: `1px solid ${C.line}` }}
+            >
+              <div
+                className="px-4 py-2.5 flex items-center gap-2"
+                style={{ background: C.cream, borderBottom: `1px solid ${C.line}` }}
+              >
+                <Trophy size={12} color={C.coral} strokeWidth={2.4} />
+                <span
+                  className="text-[10px] uppercase tracking-[0.22em] font-bold"
+                  style={{ color: C.muted, fontFamily: BODY }}
+                >
+                  ELO Ratings
+                </span>
+              </div>
+              <div className="grid grid-cols-2">
+                <div
+                  className="px-4 py-3"
+                  style={{ borderRight: `1px solid ${C.line}` }}
+                >
+                  <div
+                    className="text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+                    style={{ color: C.muted }}
+                  >
+                    Doubles
+                  </div>
+                  <div
+                    className="text-3xl leading-none"
+                    style={{ fontFamily: DISPLAY, color: C.navy }}
+                  >
+                    {playerRating.doublesRating ?? "—"}
+                  </div>
+                  <div className="text-[10px] mt-1" style={{ color: C.muted }}>
+                    {playerRating.doublesGames}{" "}
+                    {playerRating.doublesGames === 1 ? "game" : "games"}
+                  </div>
+                </div>
+                <div className="px-4 py-3">
+                  <div
+                    className="text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+                    style={{ color: C.muted }}
+                  >
+                    Singles
+                  </div>
+                  <div
+                    className="text-3xl leading-none"
+                    style={{ fontFamily: DISPLAY, color: C.navy }}
+                  >
+                    {playerRating.singlesRating ?? "—"}
+                  </div>
+                  <div className="text-[10px] mt-1" style={{ color: C.muted }}>
+                    {playerRating.singlesGames}{" "}
+                    {playerRating.singlesGames === 1 ? "game" : "games"}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Highlight cards — Best Partner, Toughest Opponent, Easiest Opponent.
               Only render when the player has at least one qualifying relationship
@@ -5053,14 +5302,30 @@ function PointTrendChart({ games }) {
   );
 }
 
-function StatsView({ stats, partnerships, games, players }) {
+function StatsView({ stats, partnerships, games, players, ratingsById = {} }) {
   const [sortKey, setSortKey] = useState("winPct");
   const [minGames, setMinGames] = useState(0);
 
+  // Merge ELO ratings into each stat row so the leaderboard can sort by
+  // singles or doubles rating. Players who haven't played a mode get null
+  // ratings; the comparator below pushes those to the bottom.
+  const statsWithRatings = useMemo(() => {
+    return stats.map((s) => {
+      const r = ratingsById[s.id];
+      return {
+        ...s,
+        singlesRating: r?.singlesRating ?? null,
+        singlesGames: r?.singlesGames ?? 0,
+        doublesRating: r?.doublesRating ?? null,
+        doublesGames: r?.doublesGames ?? 0,
+      };
+    });
+  }, [stats, ratingsById]);
+
   const sorted = useMemo(() => {
-    const active = stats.filter((s) => s.games >= minGames);
+    const active = statsWithRatings.filter((s) => s.games >= minGames);
     return active.slice().sort(compareBySortKey(sortKey));
-  }, [stats, sortKey, minGames]);
+  }, [statsWithRatings, sortKey, minGames]);
 
   const totalGames = games.length;
   const totalPoints = games.reduce((sum, g) => sum + g.score1 + g.score2, 0);
@@ -5151,6 +5416,8 @@ function StatsView({ stats, partnerships, games, players }) {
             <option value="games">Games</option>
             <option value="diff">Point Diff</option>
             <option value="ppg">Avg PF</option>
+            <option value="doublesRating">Doubles ELO</option>
+            <option value="singlesRating">Singles ELO</option>
           </select>
         </div>
 
@@ -5709,6 +5976,10 @@ function LeaderboardList({ sorted, sortKey, minGames }) {
                 ? (s.pointsPct * 100).toFixed(1) + "%"
                 : sortKey === "ppg"
                 ? s.ppg.toFixed(1)
+                : sortKey === "singlesRating"
+                ? s.singlesRating ?? "—"
+                : sortKey === "doublesRating"
+                ? s.doublesRating ?? "—"
                 : s[sortKey]}
             </div>
             <div className="text-[9px] uppercase tracking-[0.18em] font-bold" style={{ color: C.muted }}>
@@ -5718,6 +5989,10 @@ function LeaderboardList({ sorted, sortKey, minGames }) {
                 ? "pts won"
                 : sortKey === "ppg"
                 ? "avg PF"
+                : sortKey === "singlesRating"
+                ? "singles elo"
+                : sortKey === "doublesRating"
+                ? "doubles elo"
                 : sortKey}
             </div>
           </div>
