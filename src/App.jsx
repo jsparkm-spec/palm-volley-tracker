@@ -32,6 +32,7 @@ import {
   ChevronDown,
   Pencil,
   Search,
+  Filter,
 } from "lucide-react";
 import Logomark from "./components/Logomark";
 import AuthGate from "./components/AuthGate";
@@ -311,6 +312,95 @@ async function clearGroupFromStorage() {
   try {
     localStorage.removeItem(GROUP_STORAGE_KEY);
   } catch (e) {}
+}
+
+// ---- Session filter helpers ----
+// A session filter scopes the Stats tab to a subset of games — typically
+// "the four of us tonight" or "this week's games." Filter is persisted
+// per-group so switching groups doesn't carry the filter over.
+//
+// Filter shape:
+//   {
+//     playerIds: ['uuid', 'uuid'],      // required, the session's player pool
+//     mode: 'exclusive' | 'inclusive',  // exclusive = only games where every
+//                                       //   player on both teams is in the
+//                                       //   pool; inclusive = any game with
+//                                       //   at least one selected player
+//     timeRange: 'all' | 'today' | 'last7' | 'date' | 'custom',
+//     date: 'YYYY-MM-DD' | null,        // for timeRange='date'
+//     dateStart: 'YYYY-MM-DD' | null,   // for timeRange='custom'
+//     dateEnd: 'YYYY-MM-DD' | null,     // for timeRange='custom'
+//   }
+const SESSION_FILTER_KEY_PREFIX = "tracker:sessionFilter:v1:";
+
+function loadSessionFilter(groupId) {
+  if (!groupId) return null;
+  try {
+    const raw = localStorage.getItem(SESSION_FILTER_KEY_PREFIX + groupId);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveSessionFilter(groupId, filter) {
+  if (!groupId) return;
+  try {
+    if (filter) {
+      localStorage.setItem(SESSION_FILTER_KEY_PREFIX + groupId, JSON.stringify(filter));
+    } else {
+      localStorage.removeItem(SESSION_FILTER_KEY_PREFIX + groupId);
+    }
+  } catch (e) {}
+}
+
+// Returns the games matching the filter. Returns the full games array if
+// filter is null or has no playerIds (filter is not yet meaningful).
+function applySessionFilter(games, filter) {
+  if (!filter || !filter.playerIds || filter.playerIds.length === 0) return games;
+
+  const idSet = new Set(filter.playerIds);
+  const today = todayISO();
+
+  // Compute time bounds. dateStart/dateEnd are inclusive YYYY-MM-DD strings.
+  let dateStart = null;
+  let dateEnd = null;
+  if (filter.timeRange === "today") {
+    dateStart = today;
+    dateEnd = today;
+  } else if (filter.timeRange === "last7") {
+    // Last 7 days inclusive of today (ISO date arithmetic).
+    const d = new Date(`${today}T12:00:00-08:00`);
+    d.setDate(d.getDate() - 6);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    dateStart = `${y}-${m}-${dd}`;
+    dateEnd = today;
+  } else if (filter.timeRange === "date" && filter.date) {
+    dateStart = filter.date;
+    dateEnd = filter.date;
+  } else if (filter.timeRange === "custom") {
+    dateStart = filter.dateStart || null;
+    dateEnd = filter.dateEnd || null;
+  }
+  // "all" → both null → no time bound
+
+  return games.filter((g) => {
+    // Time bounds (string compare works on YYYY-MM-DD)
+    if (dateStart && g.date < dateStart) return false;
+    if (dateEnd && g.date > dateEnd) return false;
+
+    // Player-set membership
+    const allTeamPlayers = [...g.team1, ...g.team2];
+    if (filter.mode === "exclusive") {
+      // Every player on both teams must be in the selected set.
+      return allTeamPlayers.every((pid) => idSet.has(pid));
+    } else {
+      // Inclusive: at least one selected player appears in the game.
+      return allTeamPlayers.some((pid) => idSet.has(pid));
+    }
+  });
 }
 
 // ---- Invite link helpers ----
@@ -2684,6 +2774,38 @@ function TrackerApp({
     return map;
   }, [ratings]);
 
+  // ---- Session filter ----
+  // Scoped to the Stats tab. When set, narrows games to a chosen player pool
+  // and time window. Persisted per-group in localStorage so it survives
+  // reloads but resets when switching groups.
+  const [sessionFilter, setSessionFilter] = useState(null);
+
+  // Load filter when group changes.
+  useEffect(() => {
+    setSessionFilter(loadSessionFilter(group.id));
+  }, [group.id]);
+
+  // Persist filter to localStorage on change.
+  useEffect(() => {
+    saveSessionFilter(group.id, sessionFilter);
+  }, [group.id, sessionFilter]);
+
+  // Filtered games + recomputed stats / partnerships / ratings against the
+  // filtered subset. ELO is intentionally NOT filtered — per design decision,
+  // ratings stay all-time, the session view shows W/L stats only.
+  const filteredGames = useMemo(
+    () => applySessionFilter(games, sessionFilter),
+    [games, sessionFilter]
+  );
+  const filteredStats = useMemo(
+    () => computeStats(players, filteredGames),
+    [players, filteredGames]
+  );
+  const filteredPartnerships = useMemo(
+    () => computePartnerships(players, filteredGames),
+    [players, filteredGames]
+  );
+
   return (
     <ProfileNavContext.Provider value={profileNav}>
       <div
@@ -2750,7 +2872,18 @@ function TrackerApp({
                 <PlayersView players={players} stats={stats} onAdd={addPlayer} onRemove={removePlayer} />
               )}
               {view === "stats" && (
-                <StatsView stats={stats} partnerships={partnerships} games={games} players={players} ratingsById={ratingsById} />
+                <StatsView
+                  stats={stats}
+                  partnerships={partnerships}
+                  games={games}
+                  players={players}
+                  ratingsById={ratingsById}
+                  sessionFilter={sessionFilter}
+                  onSessionFilterChange={setSessionFilter}
+                  filteredStats={filteredStats}
+                  filteredPartnerships={filteredPartnerships}
+                  filteredGames={filteredGames}
+                />
               )}
             </>
           )}
@@ -5302,15 +5435,35 @@ function PointTrendChart({ games }) {
   );
 }
 
-function StatsView({ stats, partnerships, games, players, ratingsById = {} }) {
+function StatsView({
+  stats,
+  partnerships,
+  games,
+  players,
+  ratingsById = {},
+  sessionFilter = null,
+  onSessionFilterChange = () => {},
+  filteredStats = null,
+  filteredPartnerships = null,
+  filteredGames = null,
+}) {
   const [sortKey, setSortKey] = useState("winPct");
   const [minGames, setMinGames] = useState(0);
+  const [filterModalOpen, setFilterModalOpen] = useState(false);
+
+  // When filter is active, all stats below the filter card recompute against
+  // the filtered subset. ELO ratings stay all-time per design.
+  const filterActive =
+    !!sessionFilter && sessionFilter.playerIds && sessionFilter.playerIds.length > 0;
+  const effectiveStats = filterActive && filteredStats ? filteredStats : stats;
+  const effectivePartnerships = filterActive && filteredPartnerships ? filteredPartnerships : partnerships;
+  const effectiveGames = filterActive && filteredGames ? filteredGames : games;
 
   // Merge ELO ratings into each stat row so the leaderboard can sort by
   // singles or doubles rating. Players who haven't played a mode get null
   // ratings; the comparator below pushes those to the bottom.
   const statsWithRatings = useMemo(() => {
-    return stats.map((s) => {
+    return effectiveStats.map((s) => {
       const r = ratingsById[s.id];
       return {
         ...s,
@@ -5320,16 +5473,16 @@ function StatsView({ stats, partnerships, games, players, ratingsById = {} }) {
         doublesGames: r?.doublesGames ?? 0,
       };
     });
-  }, [stats, ratingsById]);
+  }, [effectiveStats, ratingsById]);
 
   const sorted = useMemo(() => {
     const active = statsWithRatings.filter((s) => s.games >= minGames);
     return active.slice().sort(compareBySortKey(sortKey));
   }, [statsWithRatings, sortKey, minGames]);
 
-  const totalGames = games.length;
-  const totalPoints = games.reduce((sum, g) => sum + g.score1 + g.score2, 0);
-  const topPartnership = partnerships
+  const totalGames = effectiveGames.length;
+  const totalPoints = effectiveGames.reduce((sum, g) => sum + g.score1 + g.score2, 0);
+  const topPartnership = effectivePartnerships
     .filter((p) => p.games >= 2)
     .slice()
     .sort((a, b) => b.winPct - a.winPct || b.wins - a.wins)[0];
@@ -5372,23 +5525,54 @@ function StatsView({ stats, partnerships, games, players, ratingsById = {} }) {
 
   if (totalGames === 0) {
     return (
-      <EmptyCard
-        icon={<BarChart3 size={24} color={C.coral} />}
-        title="No stats yet"
-        body="Log at least one game to populate the leaderboard, point differentials, and partnership records."
-      />
+      <>
+        <SessionFilterCard
+          filter={sessionFilter}
+          players={players}
+          onOpen={() => setFilterModalOpen(true)}
+          onClear={() => onSessionFilterChange(null)}
+        />
+        <EmptyCard
+          icon={<BarChart3 size={24} color={C.coral} />}
+          title={filterActive ? "No games match this filter" : "No stats yet"}
+          body={
+            filterActive
+              ? "Try adjusting the player set or time range, or clear the filter to see everything."
+              : "Log at least one game to populate the leaderboard, point differentials, and partnership records."
+          }
+        />
+        {filterModalOpen && (
+          <SessionFilterModal
+            initialFilter={sessionFilter}
+            players={players}
+            games={games}
+            onApply={(f) => {
+              onSessionFilterChange(f);
+              setFilterModalOpen(false);
+            }}
+            onClose={() => setFilterModalOpen(false)}
+          />
+        )}
+      </>
     );
   }
 
   return (
     <div className="space-y-4">
+      <SessionFilterCard
+        filter={sessionFilter}
+        players={players}
+        onOpen={() => setFilterModalOpen(true)}
+        onClear={() => onSessionFilterChange(null)}
+      />
+
       <div className="grid grid-cols-3 gap-2">
         <MetricCard label="Games" value={totalGames} accent={C.navy} />
         <MetricCard label="Points" value={totalPoints} accent={C.coral} />
-        <MetricCard label="Players" value={stats.filter((s) => s.games > 0).length} accent={C.navyDeep} />
+        <MetricCard label="Players" value={effectiveStats.filter((s) => s.games > 0).length} accent={C.navyDeep} />
       </div>
 
-      <PointsWonBoard stats={stats} />
+      <PointsWonBoard stats={effectiveStats} />
 
       <div className="rounded-sm overflow-hidden" style={{ background: "white", border: `1px solid ${C.line}` }}>
         <div
@@ -5447,9 +5631,12 @@ function StatsView({ stats, partnerships, games, players, ratingsById = {} }) {
         </div>
       </div>
 
-      <DailyLeaderboard games={games} players={players} />
+      {/* Daily Leaderboard hidden when a session filter is active — the
+          session filter already serves the "narrow this down" purpose, and
+          showing both is confusing. */}
+      {!filterActive && <DailyLeaderboard games={games} players={players} />}
 
-      <HotStreaksSection stats={stats} />
+      <HotStreaksSection stats={effectiveStats} />
 
       {topPartnership && (
         <div
@@ -5476,8 +5663,8 @@ function StatsView({ stats, partnerships, games, players, ratingsById = {} }) {
         </div>
       )}
 
-      {partnerships.length > 0 && (
-        <AllPartnershipsSection partnerships={partnerships} players={players} />
+      {effectivePartnerships.length > 0 && (
+        <AllPartnershipsSection partnerships={effectivePartnerships} players={players} />
       )}
 
       <div className="rounded-sm p-4" style={{ background: "white", border: `1px solid ${C.line}` }}>
@@ -5491,6 +5678,421 @@ function StatsView({ stats, partnerships, games, players, ratingsById = {} }) {
         <p className="text-[11px] mt-3" style={{ color: C.muted }}>
           CSV files import cleanly into Google Sheets — File → Import → Upload.
         </p>
+      </div>
+
+      {filterModalOpen && (
+        <SessionFilterModal
+          initialFilter={sessionFilter}
+          players={players}
+          games={games}
+          onApply={(f) => {
+            onSessionFilterChange(f);
+            setFilterModalOpen(false);
+          }}
+          onClose={() => setFilterModalOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------- Session Filter UI ----------
+// Inline card at the top of the Stats tab. When no filter is active, shows
+// a compact "Filter by session" affordance. When a filter is active, shows
+// the summary (player names + time range) with Edit / Clear actions.
+function SessionFilterCard({ filter, players, onOpen, onClear }) {
+  const active = !!filter && filter.playerIds && filter.playerIds.length > 0;
+
+  if (!active) {
+    return (
+      <button
+        onClick={onOpen}
+        className="w-full rounded-sm px-4 py-3 flex items-center justify-between transition-colors active:bg-gray-50"
+        style={{
+          background: "white",
+          border: `1px dashed ${C.line}`,
+          color: C.muted,
+        }}
+      >
+        <span className="flex items-center gap-2">
+          <Filter size={14} color={C.coral} strokeWidth={2.4} />
+          <span className="text-[11px] uppercase tracking-[0.22em] font-bold" style={{ color: C.navy }}>
+            Filter by session
+          </span>
+        </span>
+        <ChevronDown size={14} color={C.muted} strokeWidth={2.2} />
+      </button>
+    );
+  }
+
+  // Active filter — render summary
+  const playerNames = filter.playerIds
+    .map((id) => players.find((p) => p.id === id)?.name)
+    .filter(Boolean);
+  const playersLabel =
+    playerNames.length <= 3
+      ? playerNames.join(", ")
+      : `${playerNames.slice(0, 2).join(", ")} +${playerNames.length - 2}`;
+
+  let timeLabel = "All time";
+  if (filter.timeRange === "today") timeLabel = "Today";
+  else if (filter.timeRange === "last7") timeLabel = "Last 7 days";
+  else if (filter.timeRange === "date" && filter.date) timeLabel = fmtDate(filter.date);
+  else if (filter.timeRange === "custom" && filter.dateStart && filter.dateEnd)
+    timeLabel = `${fmtDate(filter.dateStart)} → ${fmtDate(filter.dateEnd)}`;
+
+  return (
+    <div
+      className="rounded-sm overflow-hidden"
+      style={{
+        background: `linear-gradient(135deg, ${C.coral} 0%, ${C.coralDeep} 100%)`,
+        color: C.cream,
+      }}
+    >
+      <div className="px-4 pt-3 pb-2 flex items-center gap-2">
+        <Filter size={12} strokeWidth={2.6} />
+        <span
+          className="text-[10px] uppercase tracking-[0.22em] font-bold"
+          style={{ fontFamily: BODY, opacity: 0.9 }}
+        >
+          Session Filter Active
+        </span>
+      </div>
+      <div className="px-4 pb-2">
+        <div
+          className="font-bold text-[15px] uppercase truncate"
+          style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+        >
+          {playersLabel}
+        </div>
+        <div className="text-[11px] opacity-90 mt-0.5" style={{ fontFamily: BODY }}>
+          {timeLabel} · {filter.mode === "exclusive" ? "Exact pool" : "Any of these"}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 px-3 pb-3">
+        <button
+          onClick={onOpen}
+          className="py-2 rounded-sm text-[11px] uppercase tracking-[0.22em] font-bold"
+          style={{ background: "rgba(255,255,255,0.15)", color: C.cream, fontFamily: BODY }}
+        >
+          Edit
+        </button>
+        <button
+          onClick={onClear}
+          className="py-2 rounded-sm text-[11px] uppercase tracking-[0.22em] font-bold"
+          style={{
+            background: "rgba(255,255,255,0.95)",
+            color: C.coralDeep,
+            fontFamily: BODY,
+          }}
+        >
+          Clear Filter
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Session Filter Modal ----------
+// Player picker + time range picker + mode toggle + live preview of how many
+// games would match. Auto-pre-populates with today's players if any games
+// exist today (the "look at our session right after we finished" common case).
+function SessionFilterModal({ initialFilter, players, games, onApply, onClose }) {
+  // Determine the default player set: if any games today, auto-select today's
+  // unique players. Otherwise, leave empty (user must pick).
+  const today = todayISO();
+  const todaysPlayers = useMemo(() => {
+    const s = new Set();
+    games.forEach((g) => {
+      if (g.date === today) {
+        g.team1.forEach((id) => s.add(id));
+        g.team2.forEach((id) => s.add(id));
+      }
+    });
+    return [...s];
+  }, [games, today]);
+
+  const [playerIds, setPlayerIds] = useState(
+    initialFilter?.playerIds && initialFilter.playerIds.length > 0
+      ? initialFilter.playerIds
+      : todaysPlayers
+  );
+  const [mode, setMode] = useState(initialFilter?.mode || "exclusive");
+  const [timeRange, setTimeRange] = useState(initialFilter?.timeRange || "all");
+  const [date, setDate] = useState(initialFilter?.date || today);
+  const [dateStart, setDateStart] = useState(initialFilter?.dateStart || today);
+  const [dateEnd, setDateEnd] = useState(initialFilter?.dateEnd || today);
+
+  // Build a draft filter and preview match count.
+  const draft = {
+    playerIds,
+    mode,
+    timeRange,
+    date,
+    dateStart,
+    dateEnd,
+  };
+  const previewGames = useMemo(
+    () => applySessionFilter(games, draft),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [games, playerIds, mode, timeRange, date, dateStart, dateEnd]
+  );
+
+  const togglePlayer = (id) => {
+    setPlayerIds((prev) =>
+      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
+    );
+  };
+  const selectAll = () => setPlayerIds(players.map((p) => p.id));
+  const selectNone = () => setPlayerIds([]);
+  const selectToday = () => setPlayerIds(todaysPlayers);
+
+  const canApply = playerIds.length > 0;
+
+  const apply = () => {
+    if (!canApply) return;
+    onApply(draft);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4 py-10"
+      style={{ background: "rgba(13,47,69,0.6)", backdropFilter: "blur(2px)" }}
+      onClick={onClose}
+    >
+      <div
+        className="relative max-w-md w-full rounded-sm overflow-hidden flex flex-col"
+        style={{
+          background: C.cream,
+          border: `1px solid ${C.line}`,
+          boxShadow: "0 24px 48px -12px rgba(13,47,69,0.4)",
+          maxHeight: "calc(100vh - 5rem)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div
+          className="flex items-center justify-between px-4 py-3 shrink-0"
+          style={{ borderBottom: `1px solid ${C.line}` }}
+        >
+          <div
+            className="text-[10px] uppercase tracking-[0.22em] font-bold"
+            style={{ color: C.muted, fontFamily: BODY }}
+          >
+            Filter by Session
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-sm flex items-center justify-center"
+            style={{ background: "white", border: `1px solid ${C.line}` }}
+            aria-label="Close filter"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body (scrollable) */}
+        <div className="overflow-y-auto px-4 py-4 flex-1">
+          {/* Player picker */}
+          <div className="flex items-center justify-between mb-2">
+            <div
+              className="text-[10px] uppercase tracking-[0.22em] font-bold"
+              style={{ color: C.navy }}
+            >
+              Players ({playerIds.length})
+            </div>
+            <div className="flex items-center gap-1">
+              {todaysPlayers.length > 0 && (
+                <button
+                  onClick={selectToday}
+                  className="text-[10px] uppercase tracking-[0.18em] font-bold px-2 py-1 rounded-sm"
+                  style={{ background: C.ice, color: C.navy }}
+                >
+                  Today
+                </button>
+              )}
+              <button
+                onClick={selectAll}
+                className="text-[10px] uppercase tracking-[0.18em] font-bold px-2 py-1 rounded-sm"
+                style={{ background: "white", color: C.muted, border: `1px solid ${C.line}` }}
+              >
+                All
+              </button>
+              <button
+                onClick={selectNone}
+                className="text-[10px] uppercase tracking-[0.18em] font-bold px-2 py-1 rounded-sm"
+                style={{ background: "white", color: C.muted, border: `1px solid ${C.line}` }}
+              >
+                None
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 mb-5">
+            {players.map((p) => {
+              const checked = playerIds.includes(p.id);
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => togglePlayer(p.id)}
+                  className="text-left px-3 py-2 rounded-sm flex items-center gap-2 transition-colors"
+                  style={{
+                    background: checked ? C.coral : "white",
+                    color: checked ? C.cream : C.ink,
+                    border: `1px solid ${checked ? C.coral : C.line}`,
+                  }}
+                >
+                  <span
+                    className="w-4 h-4 rounded-sm flex items-center justify-center shrink-0"
+                    style={{
+                      background: checked ? "rgba(255,255,255,0.25)" : "white",
+                      border: `1px solid ${checked ? "rgba(255,255,255,0.6)" : C.line}`,
+                    }}
+                  >
+                    {checked && <Check size={11} strokeWidth={3} color={C.cream} />}
+                  </span>
+                  <span className="text-sm font-bold truncate">{p.name}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Mode toggle */}
+          <div
+            className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2"
+            style={{ color: C.navy }}
+          >
+            Match mode
+          </div>
+          <div className="grid grid-cols-2 gap-2 mb-5">
+            <button
+              onClick={() => setMode("exclusive")}
+              className="px-3 py-2.5 rounded-sm text-left"
+              style={{
+                background: mode === "exclusive" ? C.navy : "white",
+                color: mode === "exclusive" ? C.cream : C.ink,
+                border: `1px solid ${mode === "exclusive" ? C.navy : C.line}`,
+              }}
+            >
+              <div className="text-[11px] uppercase tracking-[0.18em] font-bold">
+                Exact pool
+              </div>
+              <div className="text-[10px] mt-0.5 opacity-80">
+                Only games where every player is in this set
+              </div>
+            </button>
+            <button
+              onClick={() => setMode("inclusive")}
+              className="px-3 py-2.5 rounded-sm text-left"
+              style={{
+                background: mode === "inclusive" ? C.navy : "white",
+                color: mode === "inclusive" ? C.cream : C.ink,
+                border: `1px solid ${mode === "inclusive" ? C.navy : C.line}`,
+              }}
+            >
+              <div className="text-[11px] uppercase tracking-[0.18em] font-bold">
+                Any of these
+              </div>
+              <div className="text-[10px] mt-0.5 opacity-80">
+                Games involving at least one of these players
+              </div>
+            </button>
+          </div>
+
+          {/* Time range */}
+          <div
+            className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2"
+            style={{ color: C.navy }}
+          >
+            Time range
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 mb-3">
+            {[
+              { v: "all", l: "All time" },
+              { v: "today", l: "Today" },
+              { v: "last7", l: "Last 7 days" },
+              { v: "date", l: "Specific date" },
+              { v: "custom", l: "Custom range" },
+            ].map((opt) => (
+              <button
+                key={opt.v}
+                onClick={() => setTimeRange(opt.v)}
+                className="px-3 py-2 rounded-sm text-[11px] uppercase tracking-[0.18em] font-bold"
+                style={{
+                  background: timeRange === opt.v ? C.navy : "white",
+                  color: timeRange === opt.v ? C.cream : C.ink,
+                  border: `1px solid ${timeRange === opt.v ? C.navy : C.line}`,
+                }}
+              >
+                {opt.l}
+              </button>
+            ))}
+          </div>
+          {timeRange === "date" && (
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full px-3 py-2 rounded-sm mb-3"
+              style={{ background: "white", border: `1px solid ${C.line}` }}
+            />
+          )}
+          {timeRange === "custom" && (
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <input
+                type="date"
+                value={dateStart}
+                onChange={(e) => setDateStart(e.target.value)}
+                className="px-3 py-2 rounded-sm"
+                style={{ background: "white", border: `1px solid ${C.line}` }}
+              />
+              <input
+                type="date"
+                value={dateEnd}
+                onChange={(e) => setDateEnd(e.target.value)}
+                className="px-3 py-2 rounded-sm"
+                style={{ background: "white", border: `1px solid ${C.line}` }}
+              />
+            </div>
+          )}
+
+          {/* Preview */}
+          <div
+            className="rounded-sm p-3 flex items-center justify-between"
+            style={{ background: C.ice, border: `1px solid ${C.line}` }}
+          >
+            <span
+              className="text-[10px] uppercase tracking-[0.22em] font-bold"
+              style={{ color: C.navy }}
+            >
+              Preview
+            </span>
+            <span className="text-sm font-bold" style={{ color: C.navyDeep }}>
+              {previewGames.length} {previewGames.length === 1 ? "game" : "games"}
+            </span>
+          </div>
+        </div>
+
+        {/* Footer actions */}
+        <div
+          className="grid grid-cols-2 gap-2 p-3 shrink-0"
+          style={{ borderTop: `1px solid ${C.line}`, background: C.cream }}
+        >
+          <button
+            onClick={onClose}
+            className="py-3 rounded-sm text-sm font-bold"
+            style={{ background: "white", color: C.muted, border: `1px solid ${C.line}` }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={apply}
+            disabled={!canApply}
+            className="py-3 rounded-sm text-sm font-bold disabled:opacity-50"
+            style={{ background: C.coral, color: C.cream }}
+          >
+            Apply Filter
+          </button>
+        </div>
       </div>
     </div>
   );
