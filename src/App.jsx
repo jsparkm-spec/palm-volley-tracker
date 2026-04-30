@@ -548,13 +548,13 @@ function computeStats(players, games, { trackStreaks = true } = {}) {
   });
 }
 
-// ---------- ELO Ratings ----------
-// Computes singles and doubles ELO ratings for every player by replaying
+// ---------- Spark Rating ----------
+// Computes singles and doubles Spark ratings for every player by replaying
 // all games chronologically. Two ratings tracked separately — a singles
 // game only updates singles ratings, doubles only doubles. Players who
 // haven't played a given mode have null rating + 0 games for that mode.
 //
-// Math:
+// Math (standard ELO under the hood, branded as "Spark"):
 //   expected = 1 / (1 + 10^((oppRating - myRating) / 400))
 //   actual   = 1 if won else 0
 //   marginMult = log2(margin + 1) — pickleball margins range 1..11+
@@ -570,10 +570,10 @@ function computeStats(players, games, { trackStreaks = true } = {}) {
 // History is tracked per player per mode: each entry records the date,
 // the post-game rating, the change applied, and the game id (so we can
 // render rating changes next to each game in the games list).
-const ELO_INITIAL = 1500;
-const ELO_K_NEW = 40;
-const ELO_K_ESTABLISHED = 20;
-const ELO_ESTABLISHED_THRESHOLD = 15;
+const SPARK_INITIAL = 1500;
+const SPARK_K_NEW = 40;
+const SPARK_K_ESTABLISHED = 20;
+const SPARK_ESTABLISHED_THRESHOLD = 15;
 
 function computeRatings(players, games) {
   const byId = {};
@@ -581,10 +581,10 @@ function computeRatings(players, games) {
     byId[p.id] = {
       id: p.id,
       name: p.name,
-      singlesRating: ELO_INITIAL,
+      singlesRating: SPARK_INITIAL,
       singlesGames: 0,
       singlesHistory: [],
-      doublesRating: ELO_INITIAL,
+      doublesRating: SPARK_INITIAL,
       doublesGames: 0,
       doublesHistory: [],
     };
@@ -629,7 +629,7 @@ function computeRatings(players, games) {
     // experience grows").
     const applyTeam = (teamPlayers, expected, actual) => {
       teamPlayers.forEach((p) => {
-        const k = p[gamesKey] < ELO_ESTABLISHED_THRESHOLD ? ELO_K_NEW : ELO_K_ESTABLISHED;
+        const k = p[gamesKey] < SPARK_ESTABLISHED_THRESHOLD ? SPARK_K_NEW : SPARK_K_ESTABLISHED;
         const change = k * marginMult * (actual - expected);
         p[ratingKey] = p[ratingKey] + change;
         p[gamesKey] = p[gamesKey] + 1;
@@ -2791,7 +2791,7 @@ function TrackerApp({
   }, [group.id, sessionFilter]);
 
   // Filtered games + recomputed stats / partnerships / ratings against the
-  // filtered subset. ELO is intentionally NOT filtered — per design decision,
+  // filtered subset. Spark Rating is intentionally NOT filtered — per design decision,
   // ratings stay all-time, the session view shows W/L stats only.
   const filteredGames = useMemo(
     () => applySessionFilter(games, sessionFilter),
@@ -4496,7 +4496,7 @@ function TeamResult({ teamPlayers, score, won, side, ratingChange }) {
           style={{ color: positive ? C.coral : C.muted }}
         >
           {positive ? "+" : ""}
-          {ratingChange} ELO
+          {ratingChange} Spark
         </div>
       )}
     </div>
@@ -4836,7 +4836,7 @@ function PlayerProfileView({ playerId, players, games, stats, partnerships, rati
             />
           </div>
 
-          {/* ELO Ratings — separate card. Shows whichever modes the player
+          {/* Spark Rating — separate card. Shows whichever modes the player
               has actually played; "—" when none. */}
           {playerRating && (playerRating.singlesGames > 0 || playerRating.doublesGames > 0) && (
             <div
@@ -4847,12 +4847,12 @@ function PlayerProfileView({ playerId, players, games, stats, partnerships, rati
                 className="px-4 py-2.5 flex items-center gap-2"
                 style={{ background: C.cream, borderBottom: `1px solid ${C.line}` }}
               >
-                <Trophy size={12} color={C.coral} strokeWidth={2.4} />
+                <Zap size={12} color={C.coral} strokeWidth={2.4} fill={C.coral} />
                 <span
                   className="text-[10px] uppercase tracking-[0.22em] font-bold"
                   style={{ color: C.muted, fontFamily: BODY }}
                 >
-                  ELO Ratings
+                  Spark Rating
                 </span>
               </div>
               <div className="grid grid-cols-2">
@@ -5452,14 +5452,14 @@ function StatsView({
   const [filterModalOpen, setFilterModalOpen] = useState(false);
 
   // When filter is active, all stats below the filter card recompute against
-  // the filtered subset. ELO ratings stay all-time per design.
+  // the filtered subset. Spark Rating stays all-time per design.
   const filterActive =
     !!sessionFilter && sessionFilter.playerIds && sessionFilter.playerIds.length > 0;
   const effectiveStats = filterActive && filteredStats ? filteredStats : stats;
   const effectivePartnerships = filterActive && filteredPartnerships ? filteredPartnerships : partnerships;
   const effectiveGames = filterActive && filteredGames ? filteredGames : games;
 
-  // Merge ELO ratings into each stat row so the leaderboard can sort by
+  // Merge Spark ratings into each stat row so the leaderboard can sort by
   // singles or doubles rating. Players who haven't played a mode get null
   // ratings; the comparator below pushes those to the bottom.
   const statsWithRatings = useMemo(() => {
@@ -5600,8 +5600,8 @@ function StatsView({
             <option value="games">Games</option>
             <option value="diff">Point Diff</option>
             <option value="ppg">Avg PF</option>
-            <option value="doublesRating">Doubles ELO</option>
-            <option value="singlesRating">Singles ELO</option>
+            <option value="doublesRating">Doubles Spark</option>
+            <option value="singlesRating">Singles Spark</option>
           </select>
         </div>
 
@@ -6592,9 +6592,9 @@ function LeaderboardList({ sorted, sortKey, minGames }) {
                 : sortKey === "ppg"
                 ? "avg PF"
                 : sortKey === "singlesRating"
-                ? "singles elo"
+                ? "singles spark"
                 : sortKey === "doublesRating"
-                ? "doubles elo"
+                ? "doubles spark"
                 : sortKey}
             </div>
           </div>
