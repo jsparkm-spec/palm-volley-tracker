@@ -1162,6 +1162,110 @@ function Splash({ message }) {
   );
 }
 
+// ---------- Confirmation Modal ----------
+// In-app replacement for window.confirm(). Native confirm() is unreliable
+// inside iOS standalone PWAs — sometimes it doesn't render at all, sometimes
+// it appears but silently dismisses. Using a real modal sidesteps the issue
+// entirely AND gives us nicer styling that matches the app.
+//
+// Usage:
+//   const { confirm, ConfirmHost } = useConfirm();
+//   ...
+//   const ok = await confirm({ title: "...", body: "...", confirmLabel: "Delete", danger: true });
+//   if (!ok) return;
+//   ...
+//   // In JSX: <ConfirmHost />
+function useConfirm() {
+  const [state, setState] = useState(null); // { title, body, confirmLabel, cancelLabel, danger, resolve }
+
+  const confirm = useCallback((opts) => {
+    return new Promise((resolve) => {
+      setState({
+        title: opts?.title || "Are you sure?",
+        body: opts?.body || "",
+        confirmLabel: opts?.confirmLabel || "Confirm",
+        cancelLabel: opts?.cancelLabel || "Cancel",
+        danger: !!opts?.danger,
+        resolve,
+      });
+    });
+  }, []);
+
+  const handleConfirm = () => {
+    state?.resolve(true);
+    setState(null);
+  };
+  const handleCancel = () => {
+    state?.resolve(false);
+    setState(null);
+  };
+
+  const ConfirmHost = () => {
+    if (!state) return null;
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center px-4"
+        style={{ background: "rgba(13,47,69,0.65)", backdropFilter: "blur(2px)" }}
+        onClick={handleCancel}
+      >
+        <div
+          className="w-full max-w-sm rounded-sm overflow-hidden"
+          style={{
+            background: C.cream,
+            border: `1px solid ${C.line}`,
+            boxShadow: "0 24px 48px -12px rgba(13,47,69,0.4)",
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-5 pt-5 pb-3">
+            <div
+              className="text-base uppercase mb-2"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em", color: C.ink }}
+            >
+              {state.title}
+            </div>
+            {state.body && (
+              <p className="text-sm" style={{ color: C.muted, lineHeight: 1.45 }}>
+                {state.body}
+              </p>
+            )}
+          </div>
+          <div
+            className="grid grid-cols-2 gap-2 p-3"
+            style={{ borderTop: `1px solid ${C.line}` }}
+          >
+            <button
+              onClick={handleCancel}
+              className="py-3 rounded-sm text-sm font-bold"
+              style={{
+                background: "white",
+                color: C.muted,
+                border: `1px solid ${C.line}`,
+                fontFamily: BODY,
+              }}
+            >
+              {state.cancelLabel}
+            </button>
+            <button
+              onClick={handleConfirm}
+              className="py-3 rounded-sm text-sm font-bold"
+              style={{
+                background: state.danger ? C.coral : C.navy,
+                color: C.cream,
+                fontFamily: BODY,
+              }}
+            >
+              {state.confirmLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return { confirm, ConfirmHost };
+}
+
 
 // ---------- Group Picker Screen ----------
 // Full-screen post-login picker for users in multiple groups. Shown only on
@@ -2592,6 +2696,11 @@ function TrackerApp({
     setTimeout(() => setToast(null), 2400);
   }, []);
 
+  // In-app confirmation modal — replaces window.confirm(), which is
+  // unreliable in iOS PWA mode (sometimes won't render, sometimes dismisses
+  // silently).
+  const { confirm, ConfirmHost } = useConfirm();
+
   // ---- Data API switcher ----
   // When the user is signed in AND has an active membership for this group,
   // use the auth-aware v2 RPCs (which take group_id and stamp created_by).
@@ -2688,12 +2797,13 @@ function TrackerApp({
   const removePlayer = async (id) => {
     const used = games.some((g) => g.team1.includes(id) || g.team2.includes(id));
     if (used) {
-      if (
-        !window.confirm(
-          "This player appears in logged games. Remove anyway? (Their games stay but they vanish from stats.)"
-        )
-      )
-        return;
+      const ok = await confirm({
+        title: "Remove this player?",
+        body: "They appear in logged games. Their games will stay, but they'll vanish from stats.",
+        confirmLabel: "Remove",
+        danger: true,
+      });
+      if (!ok) return;
     }
     const snapshot = players;
     setPlayers((prev) => prev.filter((p) => p.id !== id));
@@ -2719,15 +2829,27 @@ function TrackerApp({
   };
 
   const removeGame = async (id) => {
-    if (!window.confirm("Delete this game?")) return;
+    const ok = await confirm({
+      title: "Delete this game?",
+      body: "The game will be removed and stats will recompute. This can't be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    // Diagnostic: log the delete attempt so we have something to look at if
+    // it fails. Visible in browser devtools console.
+    console.log("[tracker] deleting game", { id, userId: session?.user?.id });
     const snapshot = games;
     setGames((prev) => prev.filter((g) => g.id !== id));
     try {
       await dataApi.deleteGame(id);
+      flash("Game deleted");
     } catch (err) {
-      console.error(err);
+      console.error("[tracker] delete game failed", err);
       setGames(snapshot);
-      flash(err.message || "Couldn't delete");
+      // Show a longer-form error than the standard flash so the user can
+      // actually read what went wrong (instead of catching a 2.4s glance).
+      flash(`Couldn't delete: ${err.message || "Unknown error"}`);
     }
   };
 
@@ -2920,6 +3042,7 @@ function TrackerApp({
               setGroupModalOpen(false);
               onCreateGroup?.();
             }}
+            confirm={confirm}
           />
         )}
 
@@ -2952,6 +3075,10 @@ function TrackerApp({
             onClose={() => setEditingGame(null)}
           />
         )}
+
+        {/* In-app confirmation modal (replaces window.confirm). Renders when
+            any handler calls confirm(...) and waits for user response. */}
+        <ConfirmHost />
       </div>
     </ProfileNavContext.Provider>
   );
@@ -3169,7 +3296,9 @@ function GroupSwitcherModal({ currentGroupId, memberships, onClose, onPick, onCr
 }
 
 // ---------- Group Modal ----------
-function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, onMembershipsChanged, onCreateGroup }) {
+function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, onMembershipsChanged, onCreateGroup, confirm }) {
+  // Fallback to window.confirm if no in-app confirm was passed (defensive).
+  const askConfirm = confirm || (async (opts) => window.confirm(opts?.body || opts?.title || "Are you sure?"));
   // Owner detection: check this user's membership in this specific group.
   const myMembership = (memberships || []).find((m) => m.group_id === group.id);
   const isOwner = myMembership?.role === "owner";
@@ -3248,9 +3377,13 @@ function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, 
   };
   const revokeInvite = async () => {
     if (!activeInvite) return;
-    if (!window.confirm("Revoke this invite link? Anyone holding the link won't be able to use it.")) {
-      return;
-    }
+    const ok = await askConfirm({
+      title: "Revoke invite link?",
+      body: "Anyone holding this link won't be able to use it. You can generate a new one anytime.",
+      confirmLabel: "Revoke",
+      danger: true,
+    });
+    if (!ok) return;
     setInviteBusy(true);
     setAdminMsg(null);
     try {
@@ -3264,19 +3397,22 @@ function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, 
     }
   };
 
-  const leave = () => {
-    if (
-      window.confirm(
-        `Leave "${group.name}"? You'll need a new invite link to rejoin. Group data stays intact for everyone else.`
-      )
-    ) {
-      onLeave();
-    }
+  const leave = async () => {
+    const ok = await askConfirm({
+      title: `Leave "${group.name}"?`,
+      body: "You'll need a new invite link to rejoin. Group data stays intact for everyone else.",
+      confirmLabel: "Leave Group",
+      danger: true,
+    });
+    if (ok) onLeave();
   };
-  const signOut = () => {
-    if (window.confirm("Sign out of your account?")) {
-      onSignOut();
-    }
+  const signOut = async () => {
+    const ok = await askConfirm({
+      title: "Sign out of your account?",
+      body: "You'll need to sign in again to access this group.",
+      confirmLabel: "Sign Out",
+    });
+    if (ok) onSignOut();
   };
 
   const toggleClaimWindow = async () => {
@@ -3312,7 +3448,13 @@ function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, 
   };
 
   const rejectMember = async (userId) => {
-    if (!window.confirm("Reject this person? They'll need to request again.")) return;
+    const ok = await askConfirm({
+      title: "Reject this person?",
+      body: "They'll need to request access again.",
+      confirmLabel: "Reject",
+      danger: true,
+    });
+    if (!ok) return;
     setAdminBusy(true);
     try {
       await authApi.rejectMember(userId, group.id);
