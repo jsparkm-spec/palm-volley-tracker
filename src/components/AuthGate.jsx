@@ -48,10 +48,17 @@ function isIosPwa() {
   return isIosDevice && isStandalone;
 }
 
-export default function AuthGate({ invitedTo = null }) {
+export default function AuthGate({
+  invitedTo = null,
+  initialMode = "welcome",
+  onBackToLanding = null,
+}) {
   // Mode flow: welcome (default) → login | signup → check-email after signup.
   // 'welcome' is the entry-point Sign In / Create Account choice screen.
-  const [mode, setMode] = useState("welcome");
+  // `initialMode` lets a parent (e.g. LandingPage) jump straight to login or
+  // signup, skipping the welcome chooser. `onBackToLanding` is wired up only
+  // when the parent provided a way back out (i.e. the marketing landing).
+  const [mode, setMode] = useState(initialMode);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [info, setInfo] = useState(null); // success/info banner (e.g. "magic link sent")
@@ -255,10 +262,19 @@ export default function AuthGate({ invitedTo = null }) {
           />
         ) : (
           <>
-            {/* Back to choice screen — only meaningful before user has typed
-                anything substantial; harmless to always show. */}
+            {/* Back button — if the user arrived from the marketing landing
+                page, send them back there; otherwise go to the internal
+                welcome chooser. Only meaningful before user has typed anything
+                substantial; harmless to always show. */}
             <button
-              onClick={() => switchMode("welcome")}
+              onClick={() => {
+                clearMsgs();
+                if (onBackToLanding) {
+                  onBackToLanding();
+                } else {
+                  setMode("welcome");
+                }
+              }}
               className="text-[11px] uppercase tracking-[0.22em] font-bold mb-4 opacity-70 inline-flex items-center gap-1"
               style={{ color: "rgba(246,249,251,0.6)" }}
             >

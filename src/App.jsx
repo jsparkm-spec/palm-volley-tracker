@@ -33,9 +33,13 @@ import {
   Pencil,
   Search,
   Filter,
+  Square,
+  Activity,
+  Smartphone,
 } from "lucide-react";
 import Logomark from "./components/Logomark";
 import AuthGate from "./components/AuthGate";
+import LandingPage from "./components/LandingPage";
 import { supabase } from "./lib/supabase";
 
 // ---------- Profile navigation context ----------
@@ -57,7 +61,7 @@ function PlayerName({ id, name, className = "", style, fallback = "(removed)" })
         e.stopPropagation();
         openProfile(id);
       }}
-      className={`text-left hover:underline decoration-dotted underline-offset-2 ${className}`}
+      className={`text-left underline decoration-dotted underline-offset-2 decoration-[rgba(90,107,120,0.55)] ${className}`}
       style={{ background: "transparent", padding: 0, ...style }}
     >
       {name || fallback}
@@ -79,7 +83,7 @@ const C = {
   coralDeep: "#c13e2a",   // coral hover/pressed state
   cream: "#f6f9fb",       // page background (off-white)
   ink: "#0d2f45",         // near-black text + dark UI (alias of navyDeep)
-  muted: "#7a8f9e",       // muted body text
+  muted: "#5a6b78",       // muted body text (darkened from #7a8f9e for WCAG AA, 5.5:1)
   line: "#e8f4f8",        // borders (alias of ice)
 };
 
@@ -167,6 +171,14 @@ const authApi = {
     authRpc("tracker_add_player_v2", { p_group_id: groupId, p_name: name }),
   deletePlayer: (groupId, playerId) =>
     authRpc("tracker_delete_player_v2", { p_group_id: groupId, p_player_id: playerId }),
+  renamePlayer: (groupId, playerId, name) =>
+    authRpc("tracker_rename_player_v2", {
+      p_group_id: groupId,
+      p_player_id: playerId,
+      p_name: name,
+    }),
+  renameGroup: (groupId, name) =>
+    authRpc("tracker_rename_group", { p_group_id: groupId, p_name: name }),
   listGames: (groupId) =>
     authRpc("tracker_list_games_v2", { p_group_id: groupId }),
   addGame: (groupId, game) =>
@@ -179,6 +191,8 @@ const authApi = {
       p_score1: game.score1,
       p_score2: game.score2,
       p_note: game.note,
+      p_started_at: game.startedAt ?? null,
+      p_ended_at: game.endedAt ?? null,
     }),
   deleteGame: (groupId, gameId) =>
     authRpc("tracker_delete_game_v2", { p_group_id: groupId, p_game_id: gameId }),
@@ -203,6 +217,9 @@ const authApi = {
   activeInvite: (groupId) =>
     authRpc("tracker_active_invite", { p_group_id: groupId }),
 
+  leaveGroup: (groupId) =>
+    authRpc("tracker_leave_group", { p_group_id: groupId }),
+
   // ---- Group creation (auth-aware) ----
   createGroup: (name, displayName) =>
     authRpc("tracker_create_group_v2", {
@@ -219,7 +236,10 @@ const authApi = {
 //
 // Use Intl.DateTimeFormat (rather than naive offset math) so DST transitions
 // don't silently corrupt dates twice a year.
-const APP_TZ = "America/Los_Angeles";
+// The user's own timezone — "today" should flip at THEIR midnight, not
+// California's (the group is on the US East Coast).
+const APP_TZ =
+  Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York";
 
 // Returns a YYYY-MM-DD string for "now" in Pacific Time. This is what we
 // store in tracker_games.game_date and use for "today" comparisons.
@@ -234,6 +254,17 @@ const todayISO = () => {
   const m = parts.find((p) => p.type === "month").value;
   const d = parts.find((p) => p.type === "day").value;
   return `${y}-${m}-${d}`;
+};
+
+// Format a millisecond duration as M:SS (or H:MM:SS past an hour). Used by the
+// Health-Tracked Game timer.
+const formatClock = (ms) => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 };
 
 // Formats a YYYY-MM-DD date string for display ("Apr 27, 2026"). The input
@@ -289,6 +320,8 @@ const mapGame = (g) => ({
   note: g.note,
   createdAt: g.created_at,
   createdBy: g.created_by || null,
+  startedAt: g.started_at || null,
+  endedAt: g.ended_at || null,
 });
 
 const GROUP_STORAGE_KEY = "tracker:group:v3";
@@ -754,6 +787,12 @@ export default function App() {
   // when the flow completes or is cancelled.
   const [isCreatingNewGroup, setIsCreatingNewGroup] = useState(false);
 
+  // Which auth view the logged-out visitor has opened. null = show landing
+  // marketing page (default). "login" or "signup" = jump straight into the
+  // AuthGate at that mode. Invite-code visitors bypass this and go directly
+  // to AuthGate so they don't see marketing before joining.
+  const [authView, setAuthView] = useState(null);
+
   // ---- Invite link state ----
   // The token currently being processed (either fresh from URL on this load,
   // or stashed from a prior load that bounced through auth). Null if none.
@@ -958,12 +997,28 @@ export default function App() {
     return <Splash message="Warming up the court…" />;
   }
 
-  // Signed-out user → AuthGate. Pass the invite token (if present) so the
-  // welcome screen can show "you've been invited" context. The token has
-  // already been stashed to localStorage; once they sign in, the
-  // auto-redeem effect picks it up.
+  // Signed-out user routing:
+  //   1. Invite-code in URL → straight to AuthGate (skip marketing)
+  //   2. CTA tapped from landing → AuthGate at the chosen mode
+  //   3. Default → marketing LandingPage
   if (!session) {
-    return <AuthGate invitedTo={pendingInviteToken || null} />;
+    if (pendingInviteToken) {
+      return <AuthGate invitedTo={pendingInviteToken} />;
+    }
+    if (authView) {
+      return (
+        <AuthGate
+          initialMode={authView}
+          onBackToLanding={() => setAuthView(null)}
+        />
+      );
+    }
+    return (
+      <LandingPage
+        onSignIn={() => setAuthView("login")}
+        onSignUp={() => setAuthView("signup")}
+      />
+    );
   }
 
   // Signed in: wait for memberships to load before deciding where to route.
@@ -1095,8 +1150,11 @@ export default function App() {
         session={session}
         memberships={memberships}
         onLeaveGroup={async () => {
+          // Server first — throws (e.g. for owners) before local state moves.
+          await authApi.leaveGroup(chosen.id);
           await clearGroupFromStorage();
           setGroup(null);
+          setRedeemedGroup(null);
           await refreshMemberships();
         }}
         onSignOut={async () => {
@@ -1136,6 +1194,11 @@ export default function App() {
   return (
     <ClaimOrJoinFlow
       session={session}
+      notice={
+        inviteError
+          ? `That invite link didn't work (${inviteError}). Ask your group for a fresh link, or start your own group below.`
+          : null
+      }
       onComplete={refreshMemberships}
       onSignOut={async () => {
         setMemberships(undefined);
@@ -1372,7 +1435,7 @@ function GroupPickerScreen({ memberships, onPick, onCreateGroup, onSignOut }) {
           <button
             onClick={onSignOut}
             className="text-[11px] uppercase tracking-[0.22em] font-bold"
-            style={{ color: "rgba(246,249,251,0.45)" }}
+            style={{ color: "rgba(246,249,251,0.72)" }}
           >
             Sign out
           </button>
@@ -1417,6 +1480,8 @@ function ClaimOrAddPlayerForGroup({ target, session, onComplete, onSignOut }) {
   const [unclaimed, setUnclaimed] = useState(null); // null = loading
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  // Bumped by the error screen's "Try again" to re-run the setup effect.
+  const [attempt, setAttempt] = useState(0);
   const [name, setName] = useState(fallbackName);
   const [editing, setEditing] = useState(false);
 
@@ -1461,14 +1526,17 @@ function ClaimOrAddPlayerForGroup({ target, session, onComplete, onSignOut }) {
           await onComplete();
         }
       } catch (e) {
-        if (!cancelled) setErr(e.message || "Couldn't set up your roster spot.");
+        if (!cancelled) {
+          setErr(e.message || "Couldn't set up your roster spot.");
+          setBusy(false);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target.group_id]);
+  }, [target.group_id, attempt]);
 
   const claim = async (playerId) => {
     setErr(null);
@@ -1499,6 +1567,46 @@ function ClaimOrAddPlayerForGroup({ target, session, onComplete, onSignOut }) {
       setBusy(false);
     }
   };
+
+  // Setup failed before the screen had anything to show → offer retry +
+  // sign-out instead of an infinite splash.
+  if (err && (unclaimed === null || (unclaimed.length === 0 && busy))) {
+    return (
+      <div
+        className="min-h-screen flex items-center justify-center px-6"
+        style={{ background: C.cream, fontFamily: BODY }}
+      >
+        <div className="text-center max-w-sm">
+          <Logomark className="w-14 h-14 mx-auto mb-4" />
+          <div className="text-base font-bold mb-2" style={{ color: C.ink }}>
+            Couldn&apos;t set up {target.name}
+          </div>
+          <p className="text-sm mb-6" style={{ color: C.muted }}>
+            {err}
+          </p>
+          <button
+            onClick={() => {
+              setErr(null);
+              setBusy(false);
+              setUnclaimed(null);
+              setAttempt((a) => a + 1);
+            }}
+            className="w-full py-3 rounded-sm text-sm font-bold uppercase tracking-wider mb-3"
+            style={{ background: C.coral, color: C.cream }}
+          >
+            Try again
+          </button>
+          <button
+            onClick={onSignOut}
+            className="w-full py-3 rounded-sm text-sm font-bold"
+            style={{ background: "transparent", color: C.muted, border: `1px solid ${C.line}` }}
+          >
+            Sign out
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // While the silent-create path is in flight, show a splash. Same for the
   // very brief load before unclaimed rows arrive.
@@ -1666,7 +1774,7 @@ function ClaimOrAddPlayerForGroup({ target, session, onComplete, onSignOut }) {
           <button
             onClick={onSignOut}
             className="text-[11px] uppercase tracking-[0.22em] font-bold"
-            style={{ color: "rgba(246,249,251,0.45)" }}
+            style={{ color: "rgba(246,249,251,0.72)" }}
           >
             Sign out
           </button>
@@ -1676,7 +1784,7 @@ function ClaimOrAddPlayerForGroup({ target, session, onComplete, onSignOut }) {
   );
 }
 
-function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCancel }) {
+function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCancel, notice }) {
   // forcedIntent ('create-group') skips the start screen entirely. Used when
   // an already-member user taps "Start a new group" from the group switcher.
   const initialStep = forcedIntent === "create-group" ? "enter-group-name" : "start";
@@ -1691,8 +1799,15 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCance
   //         'create' = brand-new player joining an existing group via invite
   //         'create-group' = creating a brand-new group
   const [intent, setIntent] = useState(forcedIntent || null);
-  const [displayName, setDisplayName] = useState("");
+  // Prefill from signup metadata — the user already told us their name once.
+  const signupMd = session?.user?.user_metadata || {};
+  const [displayName, setDisplayName] = useState(
+    signupMd.display_name || signupMd.full_name || signupMd.name || ""
+  );
   const [groupName, setGroupName] = useState("");
+  // Set after create-group: the auto-generated invite link to share.
+  const [createdInvite, setCreatedInvite] = useState(null);
+  const [inviteCopied, setInviteCopied] = useState(false);
 
   const lookupGroup = async () => {
     setErr(null);
@@ -1767,8 +1882,20 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCance
         };
         await saveGroupToStorage(g);
         setGroupCtx(g);
+        // Generate the invite link up front — a new owner's next job is
+        // getting their crew in, so don't bury it behind the gear menu.
+        let inviteUrl = null;
+        try {
+          const inv = await authApi.createInvite(newGroup.id);
+          if (inv?.short_token) {
+            inviteUrl = `${window.location.origin}/i/${inv.short_token}`;
+          }
+        } catch {
+          /* non-fatal — the owner can still generate one from settings */
+        }
+        setCreatedInvite(inviteUrl);
         setStep("success");
-        setTimeout(() => onComplete(), 800);
+        if (!inviteUrl) setTimeout(() => onComplete(), 800);
       } else {
         // Joining an existing group via invite link → redeem first, then create
         // the player record on that roster.
@@ -1819,6 +1946,18 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCance
 
         {step === "start" && (
           <>
+            {notice && (
+              <div
+                className="mb-5 px-4 py-3 rounded-sm text-sm font-semibold"
+                style={{
+                  background: "rgba(234,78,51,0.14)",
+                  border: "1px solid rgba(234,78,51,0.45)",
+                  color: "#ffd9d1",
+                }}
+              >
+                {notice}
+              </div>
+            )}
             <h1
               className="text-3xl uppercase leading-[1.05] mb-2"
               style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
@@ -1826,7 +1965,9 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCance
               Find your group
             </h1>
             <p className="text-sm mb-7" style={{ color: "rgba(246,249,251,0.7)" }}>
-              Welcome, {session.user.email}. Tell us how you want to get started.
+              Welcome{signupMd.display_name || signupMd.full_name
+                ? `, ${(signupMd.display_name || signupMd.full_name).split(" ")[0]}`
+                : ""}! Tell us how you want to get started.
             </p>
             <ChoiceButton
               icon={<Sparkles size={18} />}
@@ -1865,7 +2006,7 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCance
               <button
                 onClick={onSignOut}
                 className="text-[11px] uppercase tracking-[0.22em] font-bold"
-                style={{ color: "rgba(246,249,251,0.45)" }}
+                style={{ color: "rgba(246,249,251,0.72)" }}
               >
                 Sign out
               </button>
@@ -1966,6 +2107,7 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCance
             setDisplayName={setDisplayName}
             busy={busy}
             err={err}
+            submitLabel={intent === "create-group" ? "Create group" : "Join"}
             onSubmit={createPlayer}
             onBack={() => {
               setErr(null);
@@ -1990,9 +2132,75 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCance
             >
               You're in
             </h2>
-            <p className="text-sm" style={{ color: "rgba(246,249,251,0.75)" }}>
-              Loading {groupCtx?.name || "the tracker"}…
-            </p>
+            {createdInvite ? (
+              <>
+                <p className="text-sm mb-6" style={{ color: "rgba(246,249,251,0.75)" }}>
+                  {groupCtx?.name} is live. Now get your crew in — doubles
+                  needs four players.
+                </p>
+                <div
+                  className="rounded-sm p-4 mb-3 text-left"
+                  style={{ background: "rgba(246,249,251,0.07)", border: "1px solid rgba(246,249,251,0.18)" }}
+                >
+                  <div
+                    className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2"
+                    style={{ color: C.sky }}
+                  >
+                    Your invite link
+                  </div>
+                  <div className="text-sm font-bold truncate mb-3" title={createdInvite}>
+                    {createdInvite.replace(/^https?:\/\//, "")}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(createdInvite);
+                          setInviteCopied(true);
+                          setTimeout(() => setInviteCopied(false), 2000);
+                        } catch {
+                          window.prompt("Copy your invite link:", createdInvite);
+                        }
+                      }}
+                      className="py-2.5 rounded-sm flex items-center justify-center gap-1.5 text-sm font-bold"
+                      style={{ background: "rgba(246,249,251,0.12)", color: C.cream, border: "1px solid rgba(246,249,251,0.25)" }}
+                    >
+                      {inviteCopied ? <Check size={14} /> : <Copy size={14} />}
+                      {inviteCopied ? "Copied" : "Copy"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        const text = `Join our pickleball group "${groupCtx?.name}": ${createdInvite}`;
+                        if (navigator.share) {
+                          navigator.share({ text }).catch(() => {});
+                        } else {
+                          window.prompt("Copy your invite link:", createdInvite);
+                        }
+                      }}
+                      className="py-2.5 rounded-sm flex items-center justify-center gap-1.5 text-sm font-bold"
+                      style={{ background: C.coral, color: C.cream }}
+                    >
+                      Share
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs mb-5" style={{ color: "rgba(246,249,251,0.55)" }}>
+                  Friends who tap it join automatically. You can always find
+                  this link under group settings.
+                </p>
+                <button
+                  onClick={() => onComplete()}
+                  className="w-full py-3.5 rounded-sm text-sm uppercase tracking-[0.18em]"
+                  style={{ background: "rgba(246,249,251,0.95)", color: C.navyDeep, fontFamily: DISPLAY }}
+                >
+                  Continue to the tracker →
+                </button>
+              </>
+            ) : (
+              <p className="text-sm" style={{ color: "rgba(246,249,251,0.75)" }}>
+                Loading {groupCtx?.name || "the tracker"}…
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -2206,7 +2414,7 @@ function EnterGroupNameStep({ groupName, setGroupName, busy, err, onSubmit, onBa
   );
 }
 
-function CreatePlayerStep({ group, displayName, setDisplayName, busy, err, onSubmit, onBack }) {
+function CreatePlayerStep({ group, displayName, setDisplayName, busy, err, onSubmit, onBack, submitLabel = "Join" }) {
   const inputRef = useRef(null);
   useEffect(() => {
     inputRef.current?.focus();
@@ -2251,7 +2459,7 @@ function CreatePlayerStep({ group, displayName, setDisplayName, busy, err, onSub
         className="w-full mt-6 py-3.5 rounded-sm text-base uppercase tracking-[0.18em] disabled:opacity-40"
         style={{ background: C.coral, color: C.cream, fontFamily: DISPLAY }}
       >
-        {busy ? "Saving…" : "Join"}
+        {busy ? "Saving…" : submitLabel}
       </button>
     </div>
   );
@@ -2262,10 +2470,19 @@ function CreatePlayerStep({ group, displayName, setDisplayName, busy, err, onSub
 // Polls memberships periodically so the user is dropped into the app
 // the moment the owner approves.
 function JoinPendingScreen({ memberships, onRefresh, onSignOut }) {
+  const [checking, setChecking] = useState(false);
   useEffect(() => {
     const interval = setInterval(() => onRefresh(), 8000);
     return () => clearInterval(interval);
   }, [onRefresh]);
+  const checkNow = async () => {
+    setChecking(true);
+    try {
+      await onRefresh();
+    } finally {
+      setTimeout(() => setChecking(false), 400);
+    }
+  };
 
   return (
     <div
@@ -2293,11 +2510,13 @@ function JoinPendingScreen({ memberships, onRefresh, onSignOut }) {
           approve.
         </p>
         <button
-          onClick={onRefresh}
-          className="text-[11px] uppercase tracking-[0.22em] font-bold flex items-center justify-center gap-1.5 mx-auto"
+          onClick={checkNow}
+          disabled={checking}
+          className="text-[11px] uppercase tracking-[0.22em] font-bold flex items-center justify-center gap-1.5 mx-auto disabled:opacity-60"
           style={{ color: C.sky }}
         >
-          <RefreshCw size={12} /> Check again
+          <RefreshCw size={12} className={checking ? "animate-spin" : ""} />{" "}
+          {checking ? "Checking…" : "Check again"}
         </button>
         <div
           className="mt-10 pt-5"
@@ -2306,7 +2525,7 @@ function JoinPendingScreen({ memberships, onRefresh, onSignOut }) {
           <button
             onClick={onSignOut}
             className="text-[11px] uppercase tracking-[0.22em] font-bold"
-            style={{ color: "rgba(246,249,251,0.45)" }}
+            style={{ color: "rgba(246,249,251,0.72)" }}
           >
             Sign out
           </button>
@@ -2691,9 +2910,11 @@ function TrackerApp({
     []
   );
 
-  const flash = useCallback((msg) => {
+  const toastTimer = useRef(null);
+  const flash = useCallback((msg, ms = 2400) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast(msg);
-    setTimeout(() => setToast(null), 2400);
+    toastTimer.current = setTimeout(() => setToast(null), ms);
   }, []);
 
   // In-app confirmation modal — replaces window.confirm(), which is
@@ -2725,6 +2946,7 @@ function TrackerApp({
         listPlayers: () => authApi.listPlayers(group.id),
         addPlayer: async (name) => firstRow(await authApi.addPlayer(group.id, name)),
         deletePlayer: (playerId) => authApi.deletePlayer(group.id, playerId),
+        renamePlayer: (playerId, name) => authApi.renamePlayer(group.id, playerId, name),
         listGames: () => authApi.listGames(group.id),
         addGame: async (game) => firstRow(await authApi.addGame(group.id, game)),
         deleteGame: (gameId) => authApi.deleteGame(group.id, gameId),
@@ -2736,6 +2958,9 @@ function TrackerApp({
       listPlayers: () => api.listPlayers(group.code),
       addPlayer: async (name) => firstRow(await api.addPlayer(group.code, name)),
       deletePlayer: (playerId) => api.deletePlayer(group.code, playerId),
+      renamePlayer: () => {
+        throw new Error("Renaming needs a signed-in group member");
+      },
       listGames: () => api.listGames(group.code),
       addGame: async (game) => firstRow(await api.addGame(group.code, game)),
       deleteGame: (gameId) => api.deleteGame(group.code, gameId),
@@ -2796,15 +3021,18 @@ function TrackerApp({
 
   const removePlayer = async (id) => {
     const used = games.some((g) => g.team1.includes(id) || g.team2.includes(id));
-    if (used) {
-      const ok = await confirm({
-        title: "Remove this player?",
-        body: "They appear in logged games. Their games will stay, but they'll vanish from stats.",
-        confirmLabel: "Remove",
-        danger: true,
-      });
-      if (!ok) return;
-    }
+    const who = players.find((p) => p.id === id)?.name || "this player";
+    // Always confirm — a fat-fingered trash tap shouldn't silently remove
+    // a teammate, games or not.
+    const ok = await confirm({
+      title: `Remove ${who}?`,
+      body: used
+        ? "They appear in logged games. Their games will stay, but they'll vanish from stats."
+        : "They'll be removed from the roster.",
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (!ok) return;
     const snapshot = players;
     setPlayers((prev) => prev.filter((p) => p.id !== id));
     try {
@@ -2816,15 +3044,38 @@ function TrackerApp({
     }
   };
 
+  const renamePlayer = async (id, newName) => {
+    const snapshot = players;
+    setPlayers((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, name: newName } : p))
+    );
+    try {
+      await dataApi.renamePlayer(id, newName);
+      flash("Player renamed");
+      return true;
+    } catch (err) {
+      console.error(err);
+      setPlayers(snapshot);
+      flash(err.message || "Couldn't rename player", 5000);
+      return false;
+    }
+  };
+
   const addGame = async (game) => {
     try {
       const row = await dataApi.addGame(game);
       if (row) setGames((prev) => [mapGame(row), ...prev]);
       flash("Game logged");
       setView("games");
+      return true;
     } catch (err) {
       console.error(err);
-      flash(err.message || "Couldn't save game");
+      // Long-lived, reassuring error: the form keeps everything they typed.
+      flash(
+        `Couldn't save — check your connection and tap Log again. Your game is still filled in. (${err.message || "Unknown error"})`,
+        7000
+      );
+      return false;
     }
   };
 
@@ -2855,6 +3106,35 @@ function TrackerApp({
 
   // Edit-game modal state — null when closed, else the game being edited.
   const [editingGame, setEditingGame] = useState(null);
+
+  // ---- Browser/hardware back closes overlays instead of leaving the app ----
+  // Opening any overlay pushes one history entry; popping it (back button,
+  // edge swipe) closes whatever is open. Closing via UI pops the entry so
+  // history stays balanced.
+  const overlayOpen =
+    !!selectedPlayerId || groupModalOpen || switcherOpen || !!editingGame;
+  const overlayPushedRef = useRef(false);
+  useEffect(() => {
+    if (overlayOpen && !overlayPushedRef.current) {
+      window.history.pushState({ crOverlay: true }, "");
+      overlayPushedRef.current = true;
+    } else if (!overlayOpen && overlayPushedRef.current) {
+      overlayPushedRef.current = false;
+      if (window.history.state?.crOverlay) window.history.back();
+    }
+  }, [overlayOpen]);
+  useEffect(() => {
+    const onPop = () => {
+      if (!overlayPushedRef.current) return;
+      overlayPushedRef.current = false;
+      setSelectedPlayerId(null);
+      setGroupModalOpen(false);
+      setSwitcherOpen(false);
+      setEditingGame(null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   const saveEditedGame = async ({ date, score1, score2, note }) => {
     if (!editingGame) return false;
@@ -2941,6 +3221,8 @@ function TrackerApp({
           backgroundSize: "28px 28px",
         }}
       >
+        <InstallTip />
+
         {/* Header hidden when on profile view — profile has its own header with back button */}
         {!selectedPlayerId && (
           <Header
@@ -2991,7 +3273,7 @@ function TrackerApp({
                 />
               )}
               {view === "players" && (
-                <PlayersView players={players} stats={stats} onAdd={addPlayer} onRemove={removePlayer} />
+                <PlayersView players={players} stats={stats} onAdd={addPlayer} onRemove={removePlayer} onRename={renamePlayer} />
               )}
               {view === "stats" && (
                 <StatsView
@@ -3016,7 +3298,7 @@ function TrackerApp({
 
         {toast && (
           <div
-            className="fixed left-1/2 bottom-28 -translate-x-1/2 px-4 py-2.5 rounded-sm text-sm font-semibold shadow-lg z-50 whitespace-nowrap"
+            className="fixed left-1/2 bottom-28 -translate-x-1/2 px-4 py-2.5 rounded-sm text-sm font-semibold shadow-lg z-50 max-w-[88vw] text-center"
             style={{ background: C.ink, color: C.cream, fontFamily: BODY }}
           >
             {toast}
@@ -3030,8 +3312,8 @@ function TrackerApp({
             memberships={memberships}
             onClose={() => setGroupModalOpen(false)}
             onLeave={async () => {
+              await onLeaveGroup(); // throws on failure — modal shows the message
               setGroupModalOpen(false);
-              await onLeaveGroup();
             }}
             onSignOut={async () => {
               setGroupModalOpen(false);
@@ -3297,6 +3579,31 @@ function GroupSwitcherModal({ currentGroupId, memberships, onClose, onPick, onCr
 
 // ---------- Group Modal ----------
 function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, onMembershipsChanged, onCreateGroup, confirm }) {
+  // Group rename (owner-only). groupName mirrors the prop but updates
+  // immediately on save so the modal reflects the change without a refetch.
+  const [groupName, setGroupName] = useState(group.name);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [nameBusy, setNameBusy] = useState(false);
+  const saveGroupName = async () => {
+    const clean = nameDraft.trim();
+    if (!clean || nameBusy) return;
+    setNameBusy(true);
+    try {
+      await authApi.renameGroup(group.id, clean);
+      setGroupName(clean);
+      setEditingName(false);
+      try {
+        await saveGroupToStorage({ ...group, name: clean });
+      } catch { /* storage refresh is best-effort */ }
+      onMembershipsChanged?.();
+    } catch (e) {
+      setAdminMsg(e.message || "Couldn't rename the group.");
+      setEditingName(false);
+    } finally {
+      setNameBusy(false);
+    }
+  };
   // Fallback to window.confirm if no in-app confirm was passed (defensive).
   const askConfirm = confirm || (async (opts) => window.confirm(opts?.body || opts?.title || "Are you sure?"));
   // Owner detection: check this user's membership in this specific group.
@@ -3404,7 +3711,13 @@ function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, 
       confirmLabel: "Leave Group",
       danger: true,
     });
-    if (ok) onLeave();
+    if (!ok) return;
+    setAdminMsg(null);
+    try {
+      await onLeave();
+    } catch (e) {
+      setAdminMsg(e.message || "Couldn't leave the group.");
+    }
   };
   const signOut = async () => {
     const ok = await askConfirm({
@@ -3493,12 +3806,62 @@ function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, 
         <div className="text-[10px] uppercase tracking-[0.22em] font-bold" style={{ color: C.muted }}>
           Name
         </div>
-        <div
-          className="text-lg mb-4 uppercase"
-          style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
-        >
-          {group.name}
-        </div>
+        {editingName ? (
+          <div className="flex items-center gap-2 mb-4 mt-1">
+            <input
+              type="text"
+              value={nameDraft}
+              maxLength={60}
+              autoFocus
+              onChange={(e) => setNameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveGroupName();
+                if (e.key === "Escape") setEditingName(false);
+              }}
+              className="flex-1 min-w-0 px-3 py-2 rounded-sm text-base font-semibold outline-none"
+              style={{ background: "white", border: `1.5px solid ${C.babyBlue}`, fontFamily: BODY }}
+            />
+            <button
+              onClick={saveGroupName}
+              disabled={nameBusy || !nameDraft.trim()}
+              className="w-10 h-10 rounded-sm flex items-center justify-center shrink-0 disabled:opacity-50"
+              style={{ background: C.coral, color: C.cream }}
+              aria-label="Save group name"
+            >
+              <Check size={16} strokeWidth={2.5} />
+            </button>
+            <button
+              onClick={() => setEditingName(false)}
+              className="w-10 h-10 rounded-sm flex items-center justify-center shrink-0"
+              style={{ background: "white", border: `1px solid ${C.line}`, color: C.muted }}
+              aria-label="Cancel rename"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 mb-4">
+            <div
+              className="text-lg uppercase"
+              style={{ fontFamily: DISPLAY, letterSpacing: "0.02em" }}
+            >
+              {groupName}
+            </div>
+            {isOwner && (
+              <button
+                onClick={() => {
+                  setNameDraft(groupName);
+                  setEditingName(true);
+                }}
+                className="w-8 h-8 rounded-sm flex items-center justify-center"
+                style={{ background: "white", border: `1px solid ${C.line}`, color: C.muted }}
+                aria-label="Rename group"
+              >
+                <Pencil size={13} />
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Invite link card — owner-only. Generates and shows the group's
             primary invite URL for sharing. */}
@@ -3718,6 +4081,11 @@ function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, 
             <div className="px-1 mt-1 text-sm font-bold truncate" style={{ color: C.ink }}>
               {session.user.email}
             </div>
+
+            <div className="mt-3">
+              <WhoopConnect />
+            </div>
+
             <button
               onClick={signOut}
               className="w-full mt-3 py-3 rounded-sm flex items-center justify-center gap-2 text-sm font-bold"
@@ -3782,6 +4150,172 @@ function BottomNav({ view, setView }) {
   );
 }
 
+// ---------- iOS install tip ----------
+// Shown once to iOS Safari users who haven't installed the app. iOS has no
+// install prompt API, so we point at Share → Add to Home Screen. Dismiss is
+// remembered in localStorage.
+const INSTALL_TIP_KEY = "tracker:install-tip-dismissed";
+
+function InstallTip() {
+  const [visible, setVisible] = useState(() => {
+    try {
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      const standalone =
+        window.navigator.standalone === true ||
+        window.matchMedia("(display-mode: standalone)").matches;
+      return isIOS && !standalone && !localStorage.getItem(INSTALL_TIP_KEY);
+    } catch {
+      return false;
+    }
+  });
+
+  if (!visible) return null;
+
+  return (
+    <div
+      className="max-w-xl mx-auto px-4 pt-3"
+      role="status"
+    >
+      <div
+        className="flex items-start gap-3 rounded-sm px-3.5 py-3"
+        style={{ background: "rgba(96,192,226,0.12)", border: `1px solid ${C.line}` }}
+      >
+        <Smartphone size={16} style={{ color: C.navy, marginTop: 2, flexShrink: 0 }} />
+        <p className="text-xs leading-relaxed m-0" style={{ color: C.ink, fontFamily: BODY }}>
+          <strong>Put Court Report on your Home Screen:</strong> tap the Share
+          button, then &ldquo;Add to Home Screen.&rdquo; Opens full-screen like
+          a real app.
+        </p>
+        <button
+          onClick={() => {
+            try {
+              localStorage.setItem(INSTALL_TIP_KEY, "1");
+            } catch {}
+            setVisible(false);
+          }}
+          aria-label="Dismiss"
+          className="shrink-0"
+          style={{ background: "transparent", border: "none", color: C.muted, cursor: "pointer", padding: 2 }}
+        >
+          <X size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------- WHOOP connect (lives in Play view) ----------
+// The OAuth handshake must happen on Palm Volley's server (it holds the secret
+// client key), so this just checks status via a SECURITY DEFINER RPC and, when
+// not connected, sends the member to PVP's connect endpoint with a return URL
+// back here. Both apps share the .palmvolleypickle.com login cookie.
+const WHOOP_PROMO_DISMISSED_KEY = "tracker:whoop-connect-dismissed";
+
+function WhoopConnect({ dismissible = false }) {
+  const [status, setStatus] = useState("loading"); // loading | connected | disconnected | error
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(WHOOP_PROMO_DISMISSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    let alive = true;
+    supabase
+      .rpc("whoop_is_connected")
+      .then(({ data, error }) => {
+        if (!alive) return;
+        setStatus(error ? "error" : data ? "connected" : "disconnected");
+      })
+      .catch(() => alive && setStatus("error"));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Stay quiet until we know, and if the check errors (don't show a broken card).
+  if (status === "loading" || status === "error") return null;
+  // Dismissed promo stays hidden on the Log tab; settings still offers connect.
+  if (dismissible && dismissed && status === "disconnected") return null;
+
+  const connect = () => {
+    const ret = window.location.href;
+    window.location.href =
+      "https://palmvolleypickle.com/api/whoop/connect?return=" +
+      encodeURIComponent(ret);
+  };
+
+  if (status === "connected") {
+    return (
+      <div
+        className="flex items-center gap-2 px-3 py-2 rounded-sm"
+        style={{ background: "rgba(26,122,181,0.10)", border: `1px solid ${C.line}` }}
+      >
+        <Activity size={14} style={{ color: C.navy }} />
+        <span
+          className="text-[11px] uppercase tracking-[0.16em] font-bold"
+          style={{ color: C.navy, fontFamily: BODY }}
+        >
+          WHOOP connected
+        </span>
+        <Check size={13} style={{ color: "#16a34a", marginLeft: "auto" }} />
+      </div>
+    );
+  }
+
+  // disconnected
+  return (
+    <div
+      className="rounded-sm p-4"
+      style={{ background: "white", border: `1px solid ${C.line}`, boxShadow: "0 1px 0 rgba(0,0,0,0.02)" }}
+    >
+      <div className="flex items-center gap-2 mb-1.5">
+        <Activity size={15} style={{ color: C.coral }} />
+        <span
+          className="text-[11px] uppercase tracking-[0.2em] font-bold"
+          style={{ color: C.ink, fontFamily: BODY }}
+        >
+          Connect WHOOP
+        </span>
+      </div>
+      <p className="text-xs leading-relaxed mb-3" style={{ color: C.muted, fontFamily: BODY }}>
+        Link WHOOP to capture your strain and heart rate on health-tracked games.
+        You&apos;ll approve on Palm Volley, then come right back here.
+      </p>
+      {dismissible && (
+        <button
+          onClick={() => {
+            setDismissed(true);
+            try {
+              localStorage.setItem(WHOOP_PROMO_DISMISSED_KEY, "1");
+            } catch {
+              /* in-session dismiss still works */
+            }
+          }}
+          className="w-full py-2 mb-2 rounded-sm text-xs font-bold"
+          style={{ background: "transparent", color: C.muted, border: "none" }}
+        >
+          Not now — hide this
+        </button>
+      )}
+      <button
+        onClick={connect}
+        className="w-full py-2.5 rounded-sm text-sm uppercase tracking-[0.18em]"
+        style={{
+          background: C.navy,
+          color: C.cream,
+          fontFamily: DISPLAY,
+          boxShadow: "0 6px 16px -6px rgba(13,47,69,0.4)",
+        }}
+      >
+        Connect WHOOP →
+      </button>
+    </div>
+  );
+}
+
 // ---------- Play View ----------
 function PlayView({ players, onAddGame, onGoToPlayers }) {
   const [mode, setMode] = useState("doubles");
@@ -3793,6 +4327,82 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
   const [pickerFor, setPickerFor] = useState(null);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // ── Health-Tracked Game timer ──
+  // "idle" → "running" → "stopped". When stopped, the played window
+  // (startedAt/endedAt) is attached to the game on save so the PVP app can
+  // match it to a WHOOP workout. Persisted to localStorage so a mid-game
+  // refresh (or accidental tab close) doesn't lose a running timer.
+  const HEALTH_TIMER_KEY = "tracker:healthgame:v1";
+  const [timerState, setTimerState] = useState("idle");
+  const [startedAt, setStartedAt] = useState(null); // ISO string
+  const [endedAt, setEndedAt] = useState(null); // ISO string
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  // Restore an in-progress timer on mount.
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(HEALTH_TIMER_KEY) || "null");
+      if (saved?.timerState === "running" && saved.startedAt) {
+        setTimerState("running");
+        setStartedAt(saved.startedAt);
+      } else if (saved?.timerState === "stopped" && saved.startedAt && saved.endedAt) {
+        setTimerState("stopped");
+        setStartedAt(saved.startedAt);
+        setEndedAt(saved.endedAt);
+      }
+    } catch {
+      /* ignore corrupt timer state */
+    }
+  }, []);
+
+  // Tick once a second while running so the live clock updates.
+  useEffect(() => {
+    if (timerState !== "running") return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [timerState]);
+
+  const persistTimer = (state, started, ended) => {
+    try {
+      if (state === "idle") localStorage.removeItem(HEALTH_TIMER_KEY);
+      else
+        localStorage.setItem(
+          HEALTH_TIMER_KEY,
+          JSON.stringify({ timerState: state, startedAt: started, endedAt: ended })
+        );
+    } catch {
+      /* localStorage unavailable — timer still works in-session */
+    }
+  };
+
+  const startHealthGame = () => {
+    const iso = new Date().toISOString();
+    setStartedAt(iso);
+    setEndedAt(null);
+    setNowTick(Date.now());
+    setTimerState("running");
+    persistTimer("running", iso, null);
+  };
+  const stopHealthGame = () => {
+    const iso = new Date().toISOString();
+    setEndedAt(iso);
+    setTimerState("stopped");
+    persistTimer("stopped", startedAt, iso);
+  };
+  const clearHealthGame = () => {
+    setTimerState("idle");
+    setStartedAt(null);
+    setEndedAt(null);
+    persistTimer("idle");
+  };
+
+  const timerElapsedMs =
+    timerState === "running"
+      ? nowTick - Date.parse(startedAt)
+      : timerState === "stopped"
+      ? Date.parse(endedAt) - Date.parse(startedAt)
+      : 0;
 
   const slotCount = mode === "singles" ? 1 : 2;
 
@@ -3819,7 +4429,13 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
   const submit = async () => {
     if (!canSubmit) return;
     setSaving(true);
-    await onAddGame({
+    // A still-running timer auto-stops here — logging the game IS the natural
+    // "we're done" signal, and silently discarding the window loses the WHOOP
+    // data. If the save fails, the timer keeps running for the retry.
+    const timerRunning = timerState === "running";
+    const healthTracked = timerRunning || timerState === "stopped";
+    const effectiveEndedAt = timerRunning ? new Date().toISOString() : endedAt;
+    const ok = await onAddGame({
       date,
       mode,
       team1,
@@ -3827,12 +4443,19 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
       score1: Number(score1),
       score2: Number(score2),
       note: note.trim() || null,
+      startedAt: healthTracked ? startedAt : null,
+      endedAt: healthTracked ? effectiveEndedAt : null,
     });
-    setTeam1([]);
-    setTeam2([]);
-    setScore1("");
-    setScore2("");
-    setNote("");
+    // On failure, keep every field (players, scores, note, health window) so
+    // a courtside network blip doesn't cost the user their entry.
+    if (ok) {
+      setTeam1([]);
+      setTeam2([]);
+      setScore1("");
+      setScore2("");
+      setNote("");
+      clearHealthGame();
+    }
     setSaving(false);
   };
 
@@ -3850,6 +4473,16 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
 
   return (
     <div className="space-y-4">
+      <WhoopConnect dismissible />
+
+      <HealthTimerCard
+        state={timerState}
+        elapsedMs={timerElapsedMs}
+        onStart={startHealthGame}
+        onStop={stopHealthGame}
+        onClear={clearHealthGame}
+      />
+
       <div className="p-1 rounded-sm flex" style={{ background: "white", border: `1px solid ${C.line}` }}>
         {["doubles", "singles"].map((m) => (
           <button
@@ -3970,6 +4603,129 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
   );
 }
 
+// Health-Tracked Game timer card. Idle → a prompt to start; running → a live
+// clock with a Stop button; stopped → the captured duration with a hint that
+// WHOOP data attaches after sync. Decorative gradient ties it to the brand.
+function HealthTimerCard({ state, elapsedMs, onStart, onStop, onClear }) {
+  if (state === "idle") {
+    return (
+      <button
+        onClick={onStart}
+        className="w-full rounded-sm p-4 flex items-center gap-3 text-left transition-all active:scale-[0.99]"
+        style={{
+          background: "white",
+          border: `1px solid ${C.line}`,
+          boxShadow: "0 1px 0 rgba(0,0,0,0.02)",
+        }}
+      >
+        <div
+          className="w-10 h-10 rounded-sm flex items-center justify-center shrink-0"
+          style={{ background: "rgba(234,78,51,0.12)", color: C.coral }}
+        >
+          <Activity size={20} strokeWidth={2.4} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div
+            className="text-sm uppercase tracking-[0.16em]"
+            style={{ color: C.ink, fontFamily: DISPLAY }}
+          >
+            Start Health-Tracked Game
+          </div>
+          <div className="text-[11px] mt-0.5" style={{ color: C.muted, fontFamily: BODY }}>
+            Times your game so your WHOOP strain &amp; heart rate attach to it.
+          </div>
+        </div>
+        <Play size={18} style={{ color: C.coral }} />
+      </button>
+    );
+  }
+
+  if (state === "running") {
+    return (
+      <div
+        className="rounded-sm p-4"
+        style={{
+          background: `linear-gradient(135deg, ${C.navy}, ${C.ink})`,
+          border: `1px solid ${C.navy}`,
+        }}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span
+              className="w-2.5 h-2.5 rounded-full animate-pulse"
+              style={{ background: C.coral }}
+            />
+            <span
+              className="text-[10px] uppercase tracking-[0.24em] font-bold"
+              style={{ color: C.cream, fontFamily: BODY }}
+            >
+              Recording
+            </span>
+          </div>
+          <button
+            onClick={onStop}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-sm uppercase tracking-[0.18em] text-xs transition-all active:scale-[0.97]"
+            style={{ background: C.coral, color: C.cream, fontFamily: DISPLAY }}
+          >
+            <Square size={13} fill={C.cream} /> Stop
+          </button>
+        </div>
+        <div
+          className="mt-3 tabular-nums"
+          style={{
+            color: C.cream,
+            fontFamily: DISPLAY,
+            fontSize: 40,
+            lineHeight: 1,
+            letterSpacing: "0.04em",
+          }}
+        >
+          {formatClock(elapsedMs)}
+        </div>
+      </div>
+    );
+  }
+
+  // stopped
+  return (
+    <div
+      className="rounded-sm p-4"
+      style={{ background: "white", border: `1px solid ${C.navy}` }}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div
+            className="w-8 h-8 rounded-sm flex items-center justify-center"
+            style={{ background: "rgba(13,47,69,0.08)", color: C.navy }}
+          >
+            <Activity size={16} strokeWidth={2.4} />
+          </div>
+          <div>
+            <div
+              className="text-sm uppercase tracking-[0.16em]"
+              style={{ color: C.ink, fontFamily: DISPLAY }}
+            >
+              Health-Tracked · {formatClock(elapsedMs)}
+            </div>
+            <div className="text-[11px]" style={{ color: C.muted, fontFamily: BODY }}>
+              Enter the score and log it — WHOOP data attaches after it syncs.
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={onClear}
+          className="p-1.5 rounded-sm transition-colors"
+          style={{ color: C.muted }}
+          title="Discard timer"
+          aria-label="Discard timer"
+        >
+          <X size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TeamCard({ label, accent, slots, selectedIds, players, score, setScore, onOpenPicker, onRemoveAt }) {
   const nameOf = (id) => players.find((p) => p.id === id)?.name || "—";
   return (
@@ -4032,9 +4788,10 @@ function TeamCard({ label, accent, slots, selectedIds, players, score, setScore,
           <input
             type="number"
             inputMode="numeric"
+            pattern="[0-9]*"
             min="0"
             value={score}
-            onChange={(e) => setScore(e.target.value)}
+            onChange={(e) => setScore(e.target.value.replace(/[^0-9]/g, "").slice(0, 2))}
             placeholder="—"
             className="w-full text-center text-3xl py-2 rounded-sm outline-none"
             style={{
@@ -4051,6 +4808,10 @@ function TeamCard({ label, accent, slots, selectedIds, players, score, setScore,
 }
 
 function PlayerPicker({ title, players, onPick, onClose }) {
+  const [q, setQ] = useState("");
+  const shown = q.trim()
+    ? players.filter((p) => p.name.toLowerCase().includes(q.trim().toLowerCase()))
+    : players;
   return (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center"
@@ -4072,13 +4833,27 @@ function PlayerPicker({ title, players, onPick, onClose }) {
             <X size={16} />
           </button>
         </div>
+        {players.length > 8 && (
+          <input
+            type="text"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search players…"
+            className="w-full mb-3 px-4 py-3 rounded-sm text-sm font-semibold outline-none"
+            style={{ background: "white", border: `1px solid ${C.line}`, fontFamily: BODY }}
+          />
+        )}
         {players.length === 0 ? (
           <p className="text-sm py-8 text-center" style={{ color: C.muted }}>
             No more players available — add more in the Players tab.
           </p>
+        ) : shown.length === 0 ? (
+          <p className="text-sm py-8 text-center" style={{ color: C.muted }}>
+            No players match &ldquo;{q.trim()}&rdquo;.
+          </p>
         ) : (
           <div className="space-y-2">
-            {players.map((p) => (
+            {shown.map((p) => (
               <button
                 key={p.id}
                 onClick={() => onPick(p.id)}
@@ -4097,10 +4872,21 @@ function PlayerPicker({ title, players, onPick, onClose }) {
 }
 
 // ---------- Players View ----------
-function PlayersView({ players, stats, onAdd, onRemove }) {
+function PlayersView({ players, stats, onAdd, onRemove, onRename }) {
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
   const inputRef = useRef(null);
+  // Inline rename state — one row at a time.
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const saveRename = async () => {
+    if (!editName.trim() || renaming) return;
+    setRenaming(true);
+    const ok = await onRename(editingId, editName.trim());
+    setRenaming(false);
+    if (ok) setEditingId(null);
+  };
 
   const submit = async () => {
     setAdding(true);
@@ -4180,20 +4966,69 @@ function PlayersView({ players, stats, onAdd, onRemove }) {
                       >
                         {p.name.slice(0, 2).toUpperCase()}
                       </div>
-                      <div className="min-w-0">
-                        <PlayerName
-                          id={p.id}
-                          name={p.name}
-                          className="font-bold text-[15px] leading-tight truncate block"
-                        />
-                        <div className="text-xs" style={{ color: C.muted }}>
-                          {s && s.games > 0
-                            ? `${s.games} ${s.games === 1 ? "game" : "games"} · ${s.wins}W-${s.losses}L`
-                            : "No games yet"}
+                      {editingId === p.id ? (
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <input
+                            type="text"
+                            value={editName}
+                            maxLength={40}
+                            autoFocus
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") saveRename();
+                              if (e.key === "Escape") setEditingId(null);
+                            }}
+                            className="flex-1 min-w-0 px-3 py-2 rounded-sm text-sm font-semibold outline-none"
+                            style={{ background: C.cream, border: `1.5px solid ${C.babyBlue}`, fontFamily: BODY }}
+                          />
+                          <button
+                            onClick={saveRename}
+                            disabled={renaming || !editName.trim()}
+                            className="w-10 h-10 rounded-sm flex items-center justify-center shrink-0 disabled:opacity-50"
+                            style={{ background: C.coral, color: C.cream }}
+                            aria-label="Save name"
+                          >
+                            <Check size={16} strokeWidth={2.5} />
+                          </button>
+                          <button
+                            onClick={() => setEditingId(null)}
+                            className="w-10 h-10 rounded-sm flex items-center justify-center shrink-0"
+                            style={{ background: "white", border: `1px solid ${C.line}`, color: C.muted }}
+                            aria-label="Cancel rename"
+                          >
+                            <X size={16} />
+                          </button>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="min-w-0">
+                          <PlayerName
+                            id={p.id}
+                            name={p.name}
+                            className="font-bold text-[15px] leading-tight truncate block"
+                          />
+                          <div className="text-xs" style={{ color: C.muted }}>
+                            {s && s.games > 0
+                              ? `${s.games} ${s.games === 1 ? "game" : "games"} · ${s.wins}W-${s.losses}L`
+                              : "No games yet"}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    {s && s.currentStreak !== 0 && <StreakBadge streak={s.currentStreak} />}
+                    {editingId !== p.id && s && s.currentStreak !== 0 && <StreakBadge streak={s.currentStreak} />}
+                    {editingId !== p.id && (
+                      <button
+                        onClick={() => {
+                          setEditingId(p.id);
+                          setEditName(p.name);
+                        }}
+                        className="w-9 h-9 rounded-sm flex items-center justify-center shrink-0"
+                        style={{ background: C.cream, border: `1px solid ${C.line}`, color: C.muted }}
+                        aria-label="Rename player"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                    )}
+                    {editingId !== p.id && (
                     <button
                       onClick={() => onRemove(p.id)}
                       className="w-9 h-9 rounded-sm flex items-center justify-center shrink-0"
@@ -4202,6 +5037,7 @@ function PlayersView({ players, stats, onAdd, onRemove }) {
                     >
                       <Trash2 size={14} />
                     </button>
+                    )}
                   </div>
                 );
               })}
@@ -4370,7 +5206,7 @@ function EditGameModal({ game, players, onSave, onClose }) {
                 inputMode="numeric"
                 min="0"
                 value={score1}
-                onChange={(e) => setScore1(e.target.value)}
+                onChange={(e) => setScore1(e.target.value.replace(/[^0-9]/g, "").slice(0, 2))}
                 className="w-full px-3 py-2.5 rounded-sm text-center"
                 style={{
                   background: "white",
@@ -4392,7 +5228,7 @@ function EditGameModal({ game, players, onSave, onClose }) {
                 inputMode="numeric"
                 min="0"
                 value={score2}
-                onChange={(e) => setScore2(e.target.value)}
+                onChange={(e) => setScore2(e.target.value.replace(/[^0-9]/g, "").slice(0, 2))}
                 className="w-full px-3 py-2.5 rounded-sm text-center"
                 style={{
                   background: "white",
@@ -4544,7 +5380,7 @@ function GamesView({ games, players, onRemove, onEdit, currentUserId, isOwner, r
                 {editable && (
                   <button
                     onClick={() => onEdit(g)}
-                    className="w-7 h-7 rounded-sm flex items-center justify-center"
+                    className="w-10 h-10 rounded-sm flex items-center justify-center"
                     style={{ color: C.muted }}
                     aria-label="Edit game"
                   >
@@ -4554,7 +5390,7 @@ function GamesView({ games, players, onRemove, onEdit, currentUserId, isOwner, r
                 {editable && (
                   <button
                     onClick={() => onRemove(g.id)}
-                    className="w-7 h-7 rounded-sm flex items-center justify-center"
+                    className="w-10 h-10 rounded-sm flex items-center justify-center"
                     style={{ color: C.muted }}
                     aria-label="Delete game"
                   >
@@ -4997,6 +5833,13 @@ function PlayerProfileView({ playerId, players, games, stats, partnerships, rati
                   Spark Rating
                 </span>
               </div>
+              <p
+                className="px-4 pt-2.5 text-[11px] leading-relaxed m-0"
+                style={{ color: C.muted, fontFamily: BODY }}
+              >
+                Everyone starts at 1500. Beating stronger opponents moves you
+                up faster — think chess rating, for your crew.
+              </p>
               <div className="grid grid-cols-2">
                 <div
                   className="px-4 py-3"
@@ -7190,6 +8033,17 @@ function csv(rows) {
 
 function download(content, filename, mime) {
   const blob = new Blob([content], { type: mime });
+  // iOS standalone PWAs silently ignore anchor downloads — hand the file to
+  // the share sheet instead (saves to Files, AirDrop, email, etc).
+  try {
+    const file = new File([blob], filename, { type: mime });
+    if (window.navigator.standalone === true && navigator.canShare?.({ files: [file] })) {
+      navigator.share({ files: [file], title: filename }).catch(() => {});
+      return;
+    }
+  } catch {
+    /* fall through to anchor download */
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
