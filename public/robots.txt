@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://tracker.palmvolleypickle.com/sitemap.xml

@@ -1,4 +1,12 @@
 {
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "tracker.palmvolley.com" }],
+      "destination": "https://tracker.palmvolleypickle.com/:path*",
+      "permanent": true
+    }
+  ],
   "rewrites": [
     {
       "source": "/i/:token",
