@@ -733,173 +733,6 @@ export default function LandingPage({ onSignIn, onSignUp }) {
         </div>
       </section>
 
-      {/* ───────────────── How it works ───────────────── */}
-      <section
-        className="relative overflow-hidden"
-        style={{
-          background: C.navy,
-          color: C.cream,
-          padding: "5rem 0",
-        }}
-      >
-        {/* Faint pickleball-court motif in the background. Sits behind all
-            content; opacity is low enough to be ambient. */}
-        <div
-          aria-hidden
-          className="absolute inset-0 flex items-center justify-center"
-          style={{ opacity: 0.45 }}
-        >
-          <div style={{ width: "min(900px, 92%)", height: "78%" }}>
-            <CourtMotif color="rgba(96,192,226,0.18)" strokeWidth={0.8} />
-          </div>
-        </div>
-
-        <div className="relative max-w-5xl mx-auto px-5">
-          <Reveal className="text-center mb-12">
-            <div
-              className="text-[10px] uppercase font-bold mb-3"
-              style={{ color: C.sky, letterSpacing: "0.28em" }}
-            >
-              How it works
-            </div>
-            <h2
-              className="uppercase leading-tight"
-              style={{
-                fontFamily: DISPLAY,
-                fontSize: "clamp(1.75rem, 4vw, 2.75rem)",
-                letterSpacing: "0.01em",
-              }}
-            >
-              Three steps. <span className="cr-em-italic" style={{ color: C.coral }}>One minute.</span>
-            </h2>
-          </Reveal>
-
-          <div className="grid md:grid-cols-3 gap-6">
-            {[
-              {
-                n: "01",
-                title: "Create your group",
-                copy: "Name it, set the roster, and grab an invite code. Your crew, your court, your rules.",
-              },
-              {
-                n: "02",
-                title: "Invite the regulars",
-                copy: "Send the invite link. Friends join with one tap — no email confirmation required. The roster builds itself.",
-              },
-              {
-                n: "03",
-                title: "Log games as you play",
-                copy: "Tap in scores between sets. Stats, streaks, and Spark Ratings update instantly. Everyone sees the same numbers.",
-              },
-            ].map((s, i) => (
-              <Reveal key={s.n} delay={i * 110} className="h-full">
-                <Step {...s} />
-              </Reveal>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ───────────────── Why we built this (signature) ───────────────── */}
-      <section style={{ background: C.cream, padding: "4.5rem 0" }}>
-        <Reveal className="max-w-3xl mx-auto px-5 text-center">
-          <div
-            className="text-[10px] uppercase font-bold mb-4"
-            style={{ color: C.coral, letterSpacing: "0.28em" }}
-          >
-            Why we built this
-          </div>
-          <blockquote
-            className="leading-snug"
-            style={{
-              fontFamily: DISPLAY,
-              fontSize: "clamp(1.35rem, 2.6vw, 1.85rem)",
-              color: C.ink,
-              letterSpacing: "0.005em",
-              lineHeight: 1.25,
-            }}
-          >
-            <span style={{ color: C.muted }}>“</span>We got tired of
-            arguing about who was actually winning. So we{" "}
-            <span className="cr-em-italic" style={{ color: C.coral }}>built the receipts.</span>
-            <span style={{ color: C.muted }}>”</span>
-          </blockquote>
-          <div className="mt-6 flex items-center justify-center gap-3">
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: "50%",
-                background: C.navy,
-                color: C.cream,
-                fontFamily: DISPLAY,
-                fontSize: 13,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                letterSpacing: "0.02em",
-              }}
-            >
-              JS
-            </div>
-            <div className="text-left">
-              <div
-                className="text-xs uppercase font-bold"
-                style={{
-                  color: C.ink,
-                  letterSpacing: "0.18em",
-                  fontFamily: DISPLAY,
-                }}
-              >
-                James Sparkman
-              </div>
-              <div
-                className="text-[11px] mt-0.5"
-                style={{ color: C.muted, letterSpacing: "0.04em" }}
-              >
-                Founder · Palm Volley Pickle
-              </div>
-            </div>
-          </div>
-        </Reveal>
-      </section>
-
-      {/* ───────────────── Showcase: stat row mockup ───────────────── */}
-      <section id="showcase" style={{ background: C.cream, padding: "5rem 0", scrollMarginTop: "2rem" }}>
-        <div className="max-w-5xl mx-auto px-5">
-          <Reveal className="text-center mb-10">
-            <div
-              className="text-[10px] uppercase font-bold mb-3"
-              style={{ color: C.coral, letterSpacing: "0.28em" }}
-            >
-              The receipts
-            </div>
-            <h2
-              className="uppercase leading-tight"
-              style={{
-                fontFamily: DISPLAY,
-                fontSize: "clamp(1.75rem, 4vw, 2.75rem)",
-                letterSpacing: "0.01em",
-                color: C.ink,
-              }}
-            >
-              Your stats, <span className="cr-em-italic" style={{ color: C.navy }}>not vibes.</span>
-            </h2>
-            <p
-              className="text-base mt-4 max-w-2xl mx-auto"
-              style={{ color: C.muted }}
-            >
-              Every game gets logged. Every win and loss gets counted. The
-              numbers speak for themselves.
-            </p>
-          </Reveal>
-
-          <Reveal delay={120}>
-            <StatShowcase />
-          </Reveal>
-        </div>
-      </section>
-
       {/* ───────────────── Works with WHOOP ───────────────── */}
       <section
         className="relative overflow-hidden"
@@ -1073,6 +906,173 @@ export default function LandingPage({ onSignIn, onSignUp }) {
               </div>
             </Reveal>
           </div>
+        </div>
+      </section>
+
+      {/* ───────────────── How it works ───────────────── */}
+      <section
+        className="relative overflow-hidden"
+        style={{
+          background: C.navy,
+          color: C.cream,
+          padding: "5rem 0",
+        }}
+      >
+        {/* Faint pickleball-court motif in the background. Sits behind all
+            content; opacity is low enough to be ambient. */}
+        <div
+          aria-hidden
+          className="absolute inset-0 flex items-center justify-center"
+          style={{ opacity: 0.45 }}
+        >
+          <div style={{ width: "min(900px, 92%)", height: "78%" }}>
+            <CourtMotif color="rgba(96,192,226,0.18)" strokeWidth={0.8} />
+          </div>
+        </div>
+
+        <div className="relative max-w-5xl mx-auto px-5">
+          <Reveal className="text-center mb-12">
+            <div
+              className="text-[10px] uppercase font-bold mb-3"
+              style={{ color: C.sky, letterSpacing: "0.28em" }}
+            >
+              How it works
+            </div>
+            <h2
+              className="uppercase leading-tight"
+              style={{
+                fontFamily: DISPLAY,
+                fontSize: "clamp(1.75rem, 4vw, 2.75rem)",
+                letterSpacing: "0.01em",
+              }}
+            >
+              Three steps. <span className="cr-em-italic" style={{ color: C.coral }}>One minute.</span>
+            </h2>
+          </Reveal>
+
+          <div className="grid md:grid-cols-3 gap-6">
+            {[
+              {
+                n: "01",
+                title: "Create your group",
+                copy: "Name it, set the roster, and grab an invite code. Your crew, your court, your rules.",
+              },
+              {
+                n: "02",
+                title: "Invite the regulars",
+                copy: "Send the invite link. Friends join with one tap — no email confirmation required. The roster builds itself.",
+              },
+              {
+                n: "03",
+                title: "Log games as you play",
+                copy: "Tap in scores between sets. Stats, streaks, and Spark Ratings update instantly. Everyone sees the same numbers.",
+              },
+            ].map((s, i) => (
+              <Reveal key={s.n} delay={i * 110} className="h-full">
+                <Step {...s} />
+              </Reveal>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ───────────────── Why we built this (signature) ───────────────── */}
+      <section style={{ background: C.cream, padding: "4.5rem 0" }}>
+        <Reveal className="max-w-3xl mx-auto px-5 text-center">
+          <div
+            className="text-[10px] uppercase font-bold mb-4"
+            style={{ color: C.coral, letterSpacing: "0.28em" }}
+          >
+            Why we built this
+          </div>
+          <blockquote
+            className="leading-snug"
+            style={{
+              fontFamily: DISPLAY,
+              fontSize: "clamp(1.35rem, 2.6vw, 1.85rem)",
+              color: C.ink,
+              letterSpacing: "0.005em",
+              lineHeight: 1.25,
+            }}
+          >
+            <span style={{ color: C.muted }}>“</span>We got tired of
+            arguing about who was actually winning. So we{" "}
+            <span className="cr-em-italic" style={{ color: C.coral }}>built the receipts.</span>
+            <span style={{ color: C.muted }}>”</span>
+          </blockquote>
+          <div className="mt-6 flex items-center justify-center gap-3">
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: "50%",
+                background: C.navy,
+                color: C.cream,
+                fontFamily: DISPLAY,
+                fontSize: 13,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                letterSpacing: "0.02em",
+              }}
+            >
+              JS
+            </div>
+            <div className="text-left">
+              <div
+                className="text-xs uppercase font-bold"
+                style={{
+                  color: C.ink,
+                  letterSpacing: "0.18em",
+                  fontFamily: DISPLAY,
+                }}
+              >
+                James Sparkman
+              </div>
+              <div
+                className="text-[11px] mt-0.5"
+                style={{ color: C.muted, letterSpacing: "0.04em" }}
+              >
+                Founder · Palm Volley Pickle
+              </div>
+            </div>
+          </div>
+        </Reveal>
+      </section>
+
+      {/* ───────────────── Showcase: stat row mockup ───────────────── */}
+      <section id="showcase" style={{ background: C.cream, padding: "5rem 0", scrollMarginTop: "2rem" }}>
+        <div className="max-w-5xl mx-auto px-5">
+          <Reveal className="text-center mb-10">
+            <div
+              className="text-[10px] uppercase font-bold mb-3"
+              style={{ color: C.coral, letterSpacing: "0.28em" }}
+            >
+              The receipts
+            </div>
+            <h2
+              className="uppercase leading-tight"
+              style={{
+                fontFamily: DISPLAY,
+                fontSize: "clamp(1.75rem, 4vw, 2.75rem)",
+                letterSpacing: "0.01em",
+                color: C.ink,
+              }}
+            >
+              Your stats, <span className="cr-em-italic" style={{ color: C.navy }}>not vibes.</span>
+            </h2>
+            <p
+              className="text-base mt-4 max-w-2xl mx-auto"
+              style={{ color: C.muted }}
+            >
+              Every game gets logged. Every win and loss gets counted. The
+              numbers speak for themselves.
+            </p>
+          </Reveal>
+
+          <Reveal delay={120}>
+            <StatShowcase />
+          </Reveal>
         </div>
       </section>
 
