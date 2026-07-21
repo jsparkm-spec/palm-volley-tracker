@@ -42,6 +42,7 @@ import AuthGate from "./components/AuthGate";
 import LandingPage from "./components/LandingPage";
 import { supabase } from "./lib/supabase";
 import { initDeepLinkAuth } from "./lib/nativeAuth";
+import { initPush, unregisterPush } from "./lib/push";
 
 // ---------- Profile navigation context ----------
 // Exposes a single function `openProfile(playerId)` that deep children can call
@@ -864,7 +865,10 @@ export default function App() {
       initDeepLinkAuth();
       const { data } = await supabase.auth.getSession();
       setSession(data.session ?? null);
-      if (data.session) hadSessionRef.current = true;
+      if (data.session) {
+        hadSessionRef.current = true;
+        initPush(); // native-only; registers this device for push
+      }
       const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
         // If we already had a session and we're getting another non-null one,
         // it's a refresh / re-focus — don't churn membership state.
@@ -885,6 +889,10 @@ export default function App() {
         // re-focus would otherwise force the picker every time.
         if (event === "SIGNED_IN" && !isRefresh) setFreshLogin(true);
         if (event === "SIGNED_OUT") setFreshLogin(false);
+
+        // Push registration follows auth (native-only; no-ops on web).
+        if (event === "SIGNED_IN") initPush();
+        if (event === "SIGNED_OUT") unregisterPush();
       });
       unsub = sub?.subscription;
     })();
@@ -3731,6 +3739,26 @@ function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, 
     });
     if (ok) onSignOut();
   };
+  const deleteAccount = async () => {
+    const ok = await askConfirm({
+      title: "Delete your account?",
+      body: "This permanently deletes your account and your personal data. Groups you share stay intact for the other members. This can't be undone.",
+      confirmLabel: "Delete Account",
+      danger: true,
+    });
+    if (!ok) return;
+    setAdminMsg(null);
+    try {
+      const { error } = await supabase.rpc("tracker_delete_my_account");
+      if (error) throw error;
+      onSignOut(); // session is now invalid; clear it locally
+    } catch (e) {
+      setAdminMsg(
+        e.message ||
+          "Couldn't delete your account. Please email hello@palmvolleypickle.com."
+      );
+    }
+  };
 
   const toggleClaimWindow = async () => {
     setAdminBusy(true);
@@ -4096,6 +4124,13 @@ function GroupModal({ group, session, memberships, onClose, onLeave, onSignOut, 
               style={{ background: C.ink, color: C.cream }}
             >
               <LogOut size={14} /> Sign out
+            </button>
+            <button
+              onClick={deleteAccount}
+              className="w-full mt-2 py-2.5 rounded-sm flex items-center justify-center gap-2 text-xs font-bold"
+              style={{ background: "transparent", color: C.coral, border: `1px solid ${C.coral}` }}
+            >
+              Delete account
             </button>
           </>
         )}
