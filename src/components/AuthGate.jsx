@@ -16,6 +16,7 @@ import { useState, useRef, useEffect } from "react";
 import { Mail, Lock, ArrowRight, Sparkles, KeyRound, Loader2 } from "lucide-react";
 import Logomark from "./Logomark";
 import { supabase, authRedirectUrl } from "../lib/supabase";
+import { signInWithGoogle } from "../lib/nativeAuth";
 
 const C = {
   navy: "#0a456a",
@@ -82,14 +83,13 @@ export default function AuthGate({
     clearMsgs();
     setBusy(true);
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: { redirectTo: authRedirectUrl() },
-      });
-      if (error) throw error;
-      // The browser will redirect to Google; no further action needed here.
+      // Web: full-page redirect to Google and back. Native: opens the system
+      // browser and the session arrives via the deep-link listener, after
+      // which App swaps away from this screen.
+      await signInWithGoogle();
     } catch (e) {
       setErr(e.message || "Couldn't start Google sign in.");
+    } finally {
       setBusy(false);
     }
   };

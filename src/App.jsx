@@ -41,6 +41,7 @@ import Logomark from "./components/Logomark";
 import AuthGate from "./components/AuthGate";
 import LandingPage from "./components/LandingPage";
 import { supabase } from "./lib/supabase";
+import { initDeepLinkAuth } from "./lib/nativeAuth";
 
 // ---------- Profile navigation context ----------
 // Exposes a single function `openProfile(playerId)` that deep children can call
@@ -858,6 +859,9 @@ export default function App() {
   useEffect(() => {
     let unsub = null;
     (async () => {
+      // Native only: catch the Google OAuth deep-link callback and finish the
+      // session. No-op on web.
+      initDeepLinkAuth();
       const { data } = await supabase.auth.getSession();
       setSession(data.session ?? null);
       if (data.session) hadSessionRef.current = true;
