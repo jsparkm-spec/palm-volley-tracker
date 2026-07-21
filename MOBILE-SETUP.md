@@ -43,11 +43,15 @@ the user's data and auth identity; shared games/groups stay for other members.
 
 ## 5. Push notifications — activation (blocked on Firebase)
 Code is in place (`src/lib/push.js`, `push_tokens` table + RPCs, and the
-`supabase/functions/send-push` FCM function), but **push is intentionally NOT
-synced into the native projects yet.**
+`supabase/functions/send-push` FCM function). The plugin is synced into the
+native projects, but stays **inert** (no crash) until Firebase is configured —
+tokens simply never register.
 
-> ⚠️ Do **not** run `npx cap sync` for push until `google-services.json` is in
-> `android/app/` — the Android build fails without it.
+> ⚠️ Before you ship a native build with push actually working, add the
+> Firebase config below. If you want to build/run native BEFORE setting up
+> Firebase and hit any Firebase-init issue, temporarily remove
+> `@capacitor/push-notifications` (`npm rm @capacitor/push-notifications && npx
+> cap sync`) — the rest of the app is unaffected.
 
 To activate:
 1. Create a **Firebase project**; add the iOS app (bundle id) and Android app

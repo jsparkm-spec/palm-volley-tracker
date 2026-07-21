@@ -1,5 +1,14 @@
 {
   "appId": "com.palmvolleypickle.courtreport",
   "appName": "Court Report",
-  "webDir": "dist"
+  "webDir": "dist",
+  "plugins": {
+    "Keyboard": {
+      "resize": "native"
+    },
+    "SplashScreen": {
+      "launchAutoHide": false,
+      "backgroundColor": "#0a456a"
+    }
+  }
 }

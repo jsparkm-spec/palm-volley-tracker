@@ -43,6 +43,9 @@ import LandingPage from "./components/LandingPage";
 import { supabase } from "./lib/supabase";
 import { initDeepLinkAuth } from "./lib/nativeAuth";
 import { initPush, unregisterPush } from "./lib/push";
+import { initNative } from "./lib/native";
+import { hapticImpact, hapticSuccess } from "./lib/haptics";
+import { nativeShare } from "./lib/share";
 
 // ---------- Profile navigation context ----------
 // Exposes a single function `openProfile(playerId)` that deep children can call
@@ -863,6 +866,8 @@ export default function App() {
       // Native only: catch the Google OAuth deep-link callback and finish the
       // session. No-op on web.
       initDeepLinkAuth();
+      // Native shell setup: themed status bar + hide the launch splash.
+      initNative();
       const { data } = await supabase.auth.getSession();
       setSession(data.session ?? null);
       if (data.session) {
@@ -2182,12 +2187,12 @@ function ClaimOrJoinFlow({ session, onComplete, onSignOut, forcedIntent, onCance
                     </button>
                     <button
                       onClick={() => {
-                        const text = `Join our pickleball group "${groupCtx?.name}": ${createdInvite}`;
-                        if (navigator.share) {
-                          navigator.share({ text }).catch(() => {});
-                        } else {
-                          window.prompt("Copy your invite link:", createdInvite);
-                        }
+                        hapticImpact("light");
+                        nativeShare({
+                          title: "Join my pickleball group",
+                          text: `Join our pickleball group "${groupCtx?.name}" on Court Report`,
+                          url: createdInvite,
+                        });
                       }}
                       className="py-2.5 rounded-sm flex items-center justify-center gap-1.5 text-sm font-bold"
                       style={{ background: C.coral, color: C.cream }}
@@ -4488,6 +4493,7 @@ function PlayView({ players, onAddGame, onGoToPlayers }) {
     // On failure, keep every field (players, scores, note, health window) so
     // a courtside network blip doesn't cost the user their entry.
     if (ok) {
+      hapticSuccess(); // tactile confirmation the game was logged (native)
       setTeam1([]);
       setTeam2([]);
       setScore1("");
