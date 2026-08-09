@@ -4257,6 +4257,7 @@ const WHOOP_PROMO_DISMISSED_KEY = "tracker:whoop-connect-dismissed";
 
 function WhoopConnect({ dismissible = false }) {
   const [status, setStatus] = useState("loading"); // loading | connected | disconnected | error
+  const [busy, setBusy] = useState(false);
   const [dismissed, setDismissed] = useState(() => {
     try {
       return localStorage.getItem(WHOOP_PROMO_DISMISSED_KEY) === "1";
@@ -4291,6 +4292,19 @@ function WhoopConnect({ dismissible = false }) {
       encodeURIComponent(ret);
   };
 
+  const disconnect = async () => {
+    if (
+      !window.confirm(
+        "Disconnect WHOOP? Health data stops appearing on new games. You can reconnect anytime."
+      )
+    )
+      return;
+    setBusy(true);
+    const { error } = await supabase.rpc("whoop_disconnect");
+    setBusy(false);
+    if (!error) setStatus("disconnected");
+  };
+
   if (status === "connected") {
     return (
       <div
@@ -4305,6 +4319,14 @@ function WhoopConnect({ dismissible = false }) {
           WHOOP connected
         </span>
         <Check size={13} style={{ color: "#16a34a", marginLeft: "auto" }} />
+        <button
+          onClick={disconnect}
+          disabled={busy}
+          className="text-[10px] uppercase tracking-[0.14em] font-bold underline decoration-dotted underline-offset-2 disabled:opacity-50"
+          style={{ color: C.muted, fontFamily: BODY, background: "none", border: "none", cursor: "pointer" }}
+        >
+          {busy ? "…" : "Disconnect"}
+        </button>
       </div>
     );
   }
